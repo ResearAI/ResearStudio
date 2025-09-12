@@ -1,0 +1,674 @@
+"use client"
+
+import React, { useState, useEffect, Suspense, useRef, useCallback } from "react"
+import { useSearchParams } from "next/navigation"
+import { DashboardContent } from "@/components/dashboard-content"
+import { ComputerView } from "@/components/computer-view"
+import { Terminal, AlertCircle, GitBranch, Activity, CheckCircle2, XCircle, Pause, Play, ChevronLeft, ChevronRight, PanelLeftClose, PanelRightClose, Sparkles } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { useTaskStream, Activity as ApiActivity, FileStructureNode } from "@/lib/api"
+import { apiService } from "@/lib/api"
+import { useIsMobile } from "@/lib/hooks"
+
+// Define History Snapshot type
+interface HistorySnapshot {
+  taskId: string | null;
+  promptText: string;
+  activities: ApiActivity[];
+  currentFile: string;
+  fileContent: string;
+  terminalOutput: string[];
+  fileStructure: FileStructureNode | null;
+  timestamp: number;
+}
+
+// ComputerView ref type
+interface ComputerViewRef {
+  save: () => void;
+  revert: () => void;
+}
+
+function DashboardPageContent() {
+  const searchParams = useSearchParams()
+  const taskId = searchParams?.get('taskId')
+  const promptText = searchParams?.get('prompt') || "AI任务执行中"
+  const isMobile = useIsMobile()
+
+  const [isPaused, setIsPaused] = useState(false)
+  const [displayedActivities, setDisplayedActivities] = useState<ApiActivity[]>([]);
+
+  // 新增面板隐藏状态
+  const [isChatHidden, setIsChatHidden] = useState(false)
+  const [isWorkspaceHidden, setIsWorkspaceHidden] = useState(false)
+
+  // 添加面板状态保护，防止两个都被隐藏
+  useEffect(() => {
+    if (isChatHidden && isWorkspaceHidden) {
+      // 如果两个都被隐藏，默认显示对话框
+      setIsChatHidden(false);
+    }
+  }, [isChatHidden, isWorkspaceHidden]);
+
+  // 添加文件选择状态
+  const [selectedFile, setSelectedFile] = useState<{ filename: string; content: string } | null>(null)
+
+  // 文件编辑状态
+  const [fileEditState, setFileEditState] = useState<{ hasChanges: boolean; activeFilename: string | null }>({
+    hasChanges: false,
+    activeFilename: null
+  });
+
+  // ComputerView的引用
+  const computerViewRef = useRef<ComputerViewRef>(null);
+
+  // History State
+  const [history, setHistory] = useState<HistorySnapshot[]>([]);
+  const [currentHistoryIndex, setCurrentHistoryIndex] = useState<number>(-1);
+  const [isViewingHistory, setIsViewingHistory] = useState<boolean>(false);
+
+  // useTaskStream hook
+  const liveTaskState = useTaskStream(taskId);
+
+  // Effect to merge liveTaskState.activities (AI) into displayedActivities
+  useEffect(() => {
+    if (isViewingHistory) return;
+
+    setDisplayedActivities(prevDisplayed => {
+      const newAiActivities = liveTaskState.activities.filter(
+        aiActivity => !prevDisplayed.some(dispActivity => dispActivity.id === aiActivity.id && dispActivity.speaker !== 'user')
+      );
+      const combined = [...prevDisplayed, ...newAiActivities];
+      return combined.sort((a, b) => a.timestamp - b.timestamp);
+    });
+  }, [liveTaskState.activities, isViewingHistory]);
+
+  const handleAddUserMessage = useCallback((text: string) => {
+    if (isViewingHistory) return;
+
+    const newUserActivity: ApiActivity = {
+      id: Date.now(),
+      text: text,
+      type: 'user_input',
+      timestamp: Math.floor(Date.now() / 1000),
+      speaker: 'user',
+      status: 'completed'
+    };
+
+    console.log('Adding user message:', newUserActivity);
+
+    setDisplayedActivities(prevDisplayed => {
+      const combined = [...prevDisplayed, newUserActivity];
+      const sorted = combined.sort((a, b) => a.timestamp - b.timestamp);
+      console.log('Updated activities:', sorted);
+      return sorted;
+    });
+  }, [isViewingHistory]);
+
+  // Snapshotting Logic - uses displayedActivities
+  useEffect(() => {
+    if (isViewingHistory) {
+      return;
+    }
+
+    const newSnapshot: HistorySnapshot = {
+      taskId,
+      promptText,
+      activities: displayedActivities,
+      currentFile: liveTaskState.currentFile,
+      fileContent: liveTaskState.fileContent,
+      terminalOutput: liveTaskState.terminalOutput,
+      fileStructure: liveTaskState.fileStructure,
+      timestamp: Date.now()
+    };
+
+    if (history.length > 0) {
+      const lastSnapshot = history[history.length - 1];
+      if (
+        JSON.stringify(lastSnapshot.activities) === JSON.stringify(newSnapshot.activities) &&
+        lastSnapshot.currentFile === newSnapshot.currentFile &&
+        lastSnapshot.fileContent === newSnapshot.fileContent &&
+        JSON.stringify(lastSnapshot.terminalOutput) === JSON.stringify(newSnapshot.terminalOutput) &&
+        JSON.stringify(lastSnapshot.fileStructure) === JSON.stringify(newSnapshot.fileStructure)
+      ) {
+        return;
+      }
+    }
+
+    setHistory(prevHistory => {
+      const updatedHistory = [...prevHistory, newSnapshot];
+      return updatedHistory;
+    });
+    setCurrentHistoryIndex(history.length);
+
+  }, [
+    displayedActivities,
+    liveTaskState.currentFile,
+    liveTaskState.fileContent,
+    liveTaskState.terminalOutput,
+    liveTaskState.fileStructure,
+    isViewingHistory,
+    taskId,
+    promptText,
+    history
+  ]);
+
+  const handleHistoryChange = useCallback((newIndex: number) => {
+    if (newIndex === -1 || newIndex >= history.length) {
+      setIsViewingHistory(false);
+      setCurrentHistoryIndex(history.length > 0 ? history.length -1 : -1);
+    } else if (newIndex >= 0 && newIndex < history.length) {
+      setCurrentHistoryIndex(newIndex);
+      setIsViewingHistory(true);
+    }
+  }, [history.length]);
+
+  // 处理文件树中的文件选择
+  const handleFileSelect = useCallback((filename: string) => {
+    // 先尝试从API状态获取内容
+    let content = '';
+    if (liveTaskState.currentFile === filename) {
+      content = liveTaskState.fileContent || '';
+    }
+    
+    // 设置选中的文件
+    setSelectedFile({ filename, content });
+    
+    console.log('File selected:', filename, 'Content length:', content.length);
+    
+    // 强制触发操作台中的文件打开逻辑
+    // 通过更新 displayState 来确保文件内容能正确传递
+  }, [liveTaskState.currentFile, liveTaskState.fileContent]);
+
+  // 添加跳转到指定活动的功能
+  const handleJumpToActivity = useCallback((activityIndex: number) => {
+    if (activityIndex >= 0 && activityIndex < displayedActivities.length) {
+      // 这里可以添加滚动到指定活动的逻辑
+      console.log('Jump to activity:', activityIndex, displayedActivities[activityIndex]);
+    }
+  }, [displayedActivities]);
+
+  // 处理文件编辑状态变化
+  const handleFileEditStateChange = useCallback((hasChanges: boolean, activeFilename: string | null) => {
+    setFileEditState({ hasChanges, activeFilename });
+  }, []);
+
+  // 保存文件
+  const handleSaveFile = useCallback(() => {
+    if (computerViewRef.current) {
+      computerViewRef.current.save();
+    }
+  }, []);
+
+  // 还原文件
+  const handleRevertFile = useCallback(() => {
+    if (computerViewRef.current) {
+      computerViewRef.current.revert();
+    }
+  }, []);
+
+  // 修改面板控制逻辑，只允许三种状态
+  const handleChatToggle = () => {
+    if (isChatHidden && isWorkspaceHidden) {
+      // 如果都隐藏了，显示对话框
+      setIsChatHidden(false);
+    } else if (!isChatHidden && !isWorkspaceHidden) {
+      // 如果都显示，隐藏对话框
+      setIsChatHidden(true);
+    } else if (isChatHidden && !isWorkspaceHidden) {
+      // 如果只显示操作台，显示对话框
+      setIsChatHidden(false);
+    }
+  };
+
+  const handleWorkspaceToggle = () => {
+    if (isChatHidden && isWorkspaceHidden) {
+      // 如果都隐藏了，显示操作台
+      setIsWorkspaceHidden(false);
+    } else if (!isChatHidden && !isWorkspaceHidden) {
+      // 如果都显示，隐藏操作台
+      setIsWorkspaceHidden(true);
+    } else if (!isChatHidden && isWorkspaceHidden) {
+      // 如果只显示对话框，显示操作台
+      setIsWorkspaceHidden(false);
+    }
+  };
+
+  // Determine display state based on whether viewing history or live
+  const displayState: HistorySnapshot = isViewingHistory && history[currentHistoryIndex]
+    ? history[currentHistoryIndex]
+    : {
+        taskId,
+        promptText,
+        activities: displayedActivities,
+        currentFile: selectedFile?.filename || liveTaskState.currentFile,
+        fileContent: selectedFile?.content || liveTaskState.fileContent,
+        terminalOutput: liveTaskState.terminalOutput,
+        fileStructure: liveTaskState.fileStructure,
+        timestamp: Date.now()
+      };
+
+  // Diagnostic Log for displayState
+  useEffect(() => {
+    console.log("[DashboardPage] displayState updated:",
+      "Current File:", displayState.currentFile,
+      "File Content Length:", displayState.fileContent?.length,
+      "Is Viewing History:", isViewingHistory,
+      "History Index:", currentHistoryIndex,
+      "Activities Count:", displayState.activities.length
+      );
+  }, [displayState.currentFile, displayState.fileContent, isViewingHistory, currentHistoryIndex, displayState.activities.length]);
+
+  const handlePause = async () => {
+    if (!taskId) return
+
+    try {
+      const result = await apiService.pauseTask(taskId)
+      setIsPaused(result.is_paused)
+    } catch (error) {
+      console.error('Failed to pause/resume task:', error)
+    }
+  }
+
+  const handleExport = async () => {
+    if (!taskId) return
+
+    try {
+      const blob = await apiService.exportTask(taskId)
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `manus-pro-task-${taskId}.zip`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+    } catch (error) {
+      console.error('Failed to export task:', error)
+    }
+  }
+
+  // 如果没有 taskId，显示错误
+  if (!taskId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4" style={{ backgroundColor: 'rgb(255, 252, 252)' }}>
+        <div className="bg-white border border-slate-200 rounded-lg p-8 shadow-sm max-w-md w-full">
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              任务 ID 缺失，请从主页重新开始。
+            </AlertDescription>
+          </Alert>
+        </div>
+      </div>
+    )
+  }
+
+  const getStatusIcon = () => {
+    switch (liveTaskState.taskStatus) {
+      case 'completed':
+        return <CheckCircle2 className="h-4 w-4 text-green-600" />
+      case 'failed':
+        return <XCircle className="h-4 w-4 text-red-600" />
+      case 'started':
+        return <Activity className="h-4 w-4 text-blue-600 animate-pulse" />
+      default:
+        return <Activity className="h-4 w-4 text-slate-500" />
+    }
+  }
+
+  const getStatusText = () => {
+    switch (liveTaskState.taskStatus) {
+      case 'completed':
+        return 'Completed'
+      case 'failed':
+        return 'Failed'
+      case 'started':
+        return 'Running'
+      default:
+        return 'Preparing'
+    }
+  }
+
+  // 计算布局宽度
+  const getChatWidth = () => {
+    if (isChatHidden && isWorkspaceHidden) return 'w-0'
+    if (isChatHidden) return 'w-0'
+    if (isWorkspaceHidden) return 'w-1/2'
+    return 'w-[39%]'
+  }
+
+  const getChatPosition = () => {
+    if (isWorkspaceHidden && !isChatHidden) return 'ml-[25%]' // 居中
+    return ''
+  }
+
+  const getFileTreeWidth = () => {
+    if (isChatHidden && isWorkspaceHidden) return 'w-0'
+    if (isChatHidden) return 'w-[14%]'
+    if (isWorkspaceHidden) return 'w-0'
+    return 'w-[14%]'
+  }
+
+  const getWorkspaceWidth = () => {
+    if (isChatHidden && isWorkspaceHidden) return 'w-0'
+    if (isChatHidden) return 'w-[86%]'
+    if (isWorkspaceHidden) return 'w-0'
+    return 'w-[47%]'
+  }
+
+  return (
+    <div className="min-h-screen" style={{ backgroundColor: isWorkspaceHidden && !isChatHidden ? 'rgb(255, 255, 255)' : 'rgb(250, 252, 254)' }}>
+      {/* 顶部标题栏 - 移动端简化版 */}
+      {isMobile ? (
+        <div className="bg-white border-b border-slate-300 h-14 flex-shrink-0">
+          <div className="px-4 py-3 h-full">
+            <div className="flex items-center justify-between h-full">
+              <h1 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 via-pink-500 via-red-500 via-orange-500 via-yellow-500 via-green-500 via-blue-500 to-purple-500 animate-gradient-x">Resear</span>
+                <span>Pro</span>
+              </h1>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExport}
+                className="border-slate-300 hover:bg-slate-100"
+              >
+                Export
+              </Button>
+            </div>
+          </div>
+
+          {/* 错误提示 */}
+          {liveTaskState.error && !['completed', 'failed'].includes(liveTaskState.taskStatus) && !isViewingHistory && (
+            <div className="px-4 pb-3">
+              <Alert variant="destructive" className="border-red-200 bg-red-50">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{liveTaskState.error}</AlertDescription>
+              </Alert>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="bg-white border-b border-slate-300 h-14 flex-shrink-0">
+          <div className="px-6 py-3 h-full">
+            <div className="flex items-center justify-between h-full">
+              <div className="flex items-center gap-6">
+                <h1 className="text-xl font-semibold text-slate-900 flex items-center gap-2">
+                  <GitBranch className="h-5 w-5" />
+                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-500 via-pink-500 via-red-500 via-orange-500 via-yellow-500 via-green-500 via-blue-500 to-purple-500 animate-gradient-x">Resear</span>
+                  <span>Pro</span>
+                </h1>
+
+                {/* 状态信息 - 从底部移上来，增加Task ID显示长度 */}
+                <div className="flex items-center gap-4 text-xs text-slate-600">
+                  <span>Task: {displayState.taskId ? displayState.taskId.slice(0, 16) : 'N/A'}...</span>
+                  <span>Activities: {displayState.activities.length}</span>
+                  <span>Files: {displayState.fileStructure?.children?.length || 0}</span>
+                </div>
+
+                <div className="flex items-center gap-4 text-sm">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon()}
+                    <span className="font-medium">{getStatusText()}</span>
+                  </div>
+
+                  {liveTaskState.isConnected && liveTaskState.taskStatus === 'started' && !isViewingHistory && (
+                    <div className="flex items-center gap-2 text-slate-600">
+                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                      <span>Live sync</span>
+                    </div>
+                  )}
+                  {isViewingHistory && (
+                    <div className="flex items-center gap-2 text-amber-600">
+                      <Activity className="h-4 w-4" />
+                      <span>Viewing History</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {/* 面板控制按钮 - 移到Pause按钮左侧，修改逻辑 */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleChatToggle}
+                  className="border-slate-300 hover:bg-slate-100"
+                  title={isChatHidden ? "显示对话框" : "隐藏对话框"}
+                >
+                  <PanelLeftClose className="h-4 w-4" />
+                  <span className="ml-1 text-xs">
+                    {isChatHidden ? "Chat" : "Hide Chat"}
+                  </span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleWorkspaceToggle}
+                  className="border-slate-300 hover:bg-slate-100"
+                  title={isWorkspaceHidden ? "显示操作台" : "隐藏操作台"}
+                >
+                  <PanelRightClose className="h-4 w-4" />
+                  <span className="ml-1 text-xs">
+                    {isWorkspaceHidden ? "Workspace" : "Hide Workspace"}
+                  </span>
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePause}
+                  disabled={liveTaskState.taskStatus === 'completed' || liveTaskState.taskStatus === 'failed' || isViewingHistory}
+                  className="border-slate-300 hover:bg-slate-100"
+                >
+                  {isPaused ? <Play className="h-4 w-4 mr-1" /> : <Pause className="h-4 w-4 mr-1" />}
+                  {isPaused ? "Resume" : "Pause"}
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExport}
+                  className="border-slate-300 hover:bg-slate-100"
+                >
+                  Export
+                </Button>
+
+                {/* 分隔符 */}
+                <div className="w-px h-6 bg-slate-300 mx-2"></div>
+
+                {/* Save和Revert按钮 */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSaveFile}
+                  disabled={!fileEditState.hasChanges || isViewingHistory}
+                  className="border-slate-300 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Save
+                </Button>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRevertFile}
+                  disabled={!fileEditState.hasChanges || isViewingHistory}
+                  className="border-slate-300 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Revert
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* 错误提示 */}
+          {liveTaskState.error && !['completed', 'failed'].includes(liveTaskState.taskStatus) && !isViewingHistory && (
+            <div className="px-6 pb-3">
+              <Alert variant="destructive" className="border-red-200 bg-red-50">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{liveTaskState.error}</AlertDescription>
+              </Alert>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 主内容区域 - 固定布局，添加动画效果 */}
+      <div className="h-[calc(100vh-3.5rem)] flex overflow-hidden panel-transition">
+        {/* 移动端：只显示对话框界面 */}
+        {isMobile ? (
+          <div className="w-full h-full">
+            <DashboardContent
+              activeTask={displayState.promptText}
+              commandOutput={[]}
+              activities={displayState.activities}
+              taskStatus={isViewingHistory ? 'history' : liveTaskState.taskStatus}
+              onAddUserMessage={handleAddUserMessage}
+              isViewingHistory={isViewingHistory}
+              isSimpleMode={true}
+              isMobile={true}
+              onJumpToActivity={handleJumpToActivity}
+            />
+          </div>
+        ) : (
+          /* 桌面端：保持原有布局 */
+          <>
+            {/* 当操作台隐藏时，显示简洁的对话框界面 */}
+            {isWorkspaceHidden && !isChatHidden ? (
+              <div className="w-full h-full panel-transition">
+                <DashboardContent
+                  activeTask={displayState.promptText}
+                  commandOutput={[]}
+                  activities={displayState.activities}
+                  taskStatus={isViewingHistory ? 'history' : liveTaskState.taskStatus}
+                  onAddUserMessage={handleAddUserMessage}
+                  isViewingHistory={isViewingHistory}
+                  isSimpleMode={true}
+                  onJumpToActivity={handleJumpToActivity}
+                />
+              </div>
+            ) : (
+              <>
+                {/* 左侧对话框 */}
+                <div className={`${getChatWidth()} ${getChatPosition()} panel-transition border-r border-slate-300 bg-white flex-shrink-0 ${isChatHidden ? 'border-r-0' : ''}`}>
+                  {!isChatHidden && (
+                    <div className="h-full overflow-hidden">
+                      <DashboardContent
+                        activeTask={displayState.promptText}
+                        commandOutput={[]}
+                        activities={displayState.activities}
+                        taskStatus={isViewingHistory ? 'history' : liveTaskState.taskStatus}
+                        onAddUserMessage={handleAddUserMessage}
+                        isViewingHistory={isViewingHistory}
+                        isSimpleMode={false}
+                        onJumpToActivity={handleJumpToActivity}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* 中间文件树 - 修复显示逻辑 */}
+                <div className={`${getFileTreeWidth()} panel-transition border-r border-slate-300 bg-slate-50 flex-shrink-0 ${(isChatHidden && !isWorkspaceHidden) ? 'border-r-0' : ''}`}>
+                  {!isWorkspaceHidden && (
+                    <div className="h-full overflow-hidden">
+                      <ComputerView
+                        ref={computerViewRef}
+                        currentFile={displayState.currentFile}
+                        fileContent={displayState.fileContent}
+                        setFileContent={() => {}}
+                        isLive={liveTaskState.isConnected && !isViewingHistory}
+                        taskStatus={isViewingHistory ? 'history' : liveTaskState.taskStatus}
+                        terminalOutput={displayState.terminalOutput}
+                        fileStructure={displayState.fileStructure}
+                        isViewingHistory={isViewingHistory}
+                        historyLength={history.length}
+                        currentHistoryIndexValue={currentHistoryIndex}
+                        onHistoryChange={handleHistoryChange}
+                        showOnlyFileTree={true}
+                        onFileSelect={handleFileSelect}
+                        onFileEditStateChange={handleFileEditStateChange}
+                        taskId={taskId}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* 右侧操作台 */}
+                <div className={`${getWorkspaceWidth()} panel-transition bg-white flex-shrink-0`}>
+                  {!isWorkspaceHidden && (
+                    <div className="h-full overflow-hidden">
+                      <ComputerView
+                        ref={computerViewRef}
+                        currentFile={displayState.currentFile}
+                        fileContent={displayState.fileContent}
+                        setFileContent={() => {}}
+                        isLive={liveTaskState.isConnected && !isViewingHistory}
+                        taskStatus={isViewingHistory ? 'history' : liveTaskState.taskStatus}
+                        terminalOutput={displayState.terminalOutput}
+                        fileStructure={displayState.fileStructure}
+                        isViewingHistory={isViewingHistory}
+                        historyLength={history.length}
+                        currentHistoryIndexValue={currentHistoryIndex}
+                        onHistoryChange={handleHistoryChange}
+                        showOnlyWorkspace={true}
+                        maxTabs={isChatHidden ? 8 : 4}
+                        onFileSelect={handleFileSelect}
+                        onFileEditStateChange={handleFileEditStateChange}
+                        taskId={taskId}
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* 对话框隐藏/显示按钮 */}
+            {isChatHidden && !isWorkspaceHidden && (
+              <div className="absolute left-0 top-1/2 transform -translate-y-1/2 z-10 panel-transition">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleChatToggle}
+                  className="h-20 w-6 rounded-l-none rounded-r-lg border-l-0 bg-white/90 backdrop-blur-sm hover:bg-white border-slate-300 flex flex-col items-center justify-center p-0 panel-transition hover:w-8"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+
+            {/* 操作台隐藏/显示按钮 */}
+            {isWorkspaceHidden && !isChatHidden && (
+              <div className="absolute right-0 top-1/2 transform -translate-y-1/2 z-10 panel-transition">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleWorkspaceToggle}
+                  className="h-20 w-6 rounded-r-none rounded-l-lg border-r-0 bg-white/90 backdrop-blur-sm hover:bg-white border-slate-300 flex flex-col items-center justify-center p-0 panel-transition hover:w-8"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: 'rgb(250, 252, 254)' }}>
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-600">Loading workspace...</p>
+        </div>
+      </div>
+    }>
+      <DashboardPageContent />
+    </Suspense>
+  )
+}

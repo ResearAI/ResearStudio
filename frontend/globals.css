@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    /* ... other light theme variables ... */
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+     /* ... other dark theme variables ... */
+  }
+
+  body {
+    @apply bg-rice-paper text-charcoal;
+  }
+  
+  h1, h2, h3 {
+    @apply font-serif;
+  }
+
+  body {
+    font-family: var(--font-inter), sans-serif;
+  }
+
+  .font-serif {
+    font-family: var(--font-noto-serif), serif;
+  }
+
+  .font-sans {
+    font-family: var(--font-inter), sans-serif;
+  }
+} 

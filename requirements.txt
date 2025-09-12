@@ -1,0 +1,33 @@
+# Core Dependencies (Required)
+flask>=3.0.0
+flask-cors>=4.0.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+requests>=2.31.0
+aiohttp>=3.9.0
+websockets>=12.0
+httpx>=0.25.0
+pyyaml>=6.0.0
+
+# MCP Support (Required for agent system)
+mcp>=1.0.0
+fastmcp>=0.1.0
+
+# Data Processing (Required)
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Document Processing (Optional but recommended)
+beautifulsoup4>=4.12.0
+pypdf2>=3.0.0
+python-docx>=1.0.0
+openpyxl>=3.1.0
+pillow>=10.0.0
+
+# Optional Dependencies (Install as needed)
+# opencv-python>=4.8.0  # For video processing
+# moviepy>=1.0.0  # For video editing
+# assemblyai>=0.20.0  # For audio transcription
+# matplotlib>=3.8.0  # For plotting
+# scipy>=1.11.0  # For scientific computing
+# scikit-learn>=1.3.0  # For machine learning
