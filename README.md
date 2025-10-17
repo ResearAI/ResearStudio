@@ -166,10 +166,14 @@ This project is licensed under the MIT License - see the [LICENSE](./LICENSE) fi
 If you use ResearStudio in your research, please cite:
 
 ```bibtex
-@article{yang2025researstudio,
-  title={ResearStudio: A Human-Intervenable Framework for Building Controllable Deep-Research Agents},
-  author={Yang, Linyi and Weng, Yixuan},
-  year={2025}
+@article{yang2025researstudiohumanintervenableframeworkbuilding,
+      title={ResearStudio: A Human-Intervenable Framework for Building Controllable Deep-Research Agents}, 
+      author={Linyi Yang and Yixuan Weng},
+      year={2025},
+      eprint={2510.12194},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2510.12194}, 
 }
 ```
 
@@ -188,4 +192,5 @@ If you use ResearStudio in your research, please cite:
 
 - [Live Demo](http://ai-researcher.net:3000/)
 - [Paper](https://arxiv.org/abs/your-paper-id)
+
 - [GitHub Repository](https://github.com/ResearAI/ResearStudio)
