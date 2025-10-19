@@ -7,7 +7,7 @@
                                                                
 ```
 
-# ResearStudio - Human-Intervenable Deep Research Framework
+# ResearStudio - Human-Intervenable Deep Research Framework [EMNLP 2025]
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -194,3 +194,4 @@ If you use ResearStudio in your research, please cite:
 - [Paper](https://arxiv.org/abs/your-paper-id)
 
 - [GitHub Repository](https://github.com/ResearAI/ResearStudio)
+
