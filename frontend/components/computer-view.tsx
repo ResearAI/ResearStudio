@@ -1,13 +1,13 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from "react"
+import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Terminal, FileText, FolderTree, ChevronRight, ChevronDown, File, Folder, Info, X, Plus, ArrowLeft, ArrowRight, Save, RotateCcw, Eye, EyeOff, ChevronLeft, Download, Play, Pause, CheckCircle2, XCircle, Edit, AlertCircle, Search, Globe, FileSpreadsheet, Presentation as PresentationIcon } from "lucide-react"
-import { FileStructureNode, apiService, getCurrentApiBaseUrl } from "@/lib/api"
+import { FileStructureNode, apiService, getCurrentApiBaseUrl, normalizeFileMetadata } from "@/lib/api"
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
-import { normalizeFilename } from '@/lib/utils'
+import { appendCacheBusterForPng, normalizeFilename } from '@/lib/utils'
 
 // 添加CSS样式
 const scrollbarStyles = `
@@ -129,37 +129,115 @@ const PythonSyntaxHighlighter = ({ children, showLineNumbers = true }: { childre
 };
 
 // 简单的内置Markdown渲染器
-const MarkdownRenderer = ({ children }: { children: string }) => {
+const MarkdownRenderer = ({ children, taskId }: { children: string; taskId?: string }) => {
   const convertSimpleMarkdown = (text: string) => {
     return text
-      .replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mb-2">$1</h3>')
-      .replace(/^## (.*$)/gim, '<h2 class="text-xl font-semibold mb-3">$1</h2>')
-      .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mb-4">$1</h1>')
-      .replace(/\*\*(.*)\*\*/gim, '<strong class="font-semibold">$1</strong>')
-      .replace(/\*(.*)\*/gim, '<em class="italic">$1</em>')
-      .replace(/`([^`]*)`/gim, '<code class="bg-slate-100 px-1 py-0.5 rounded text-sm font-mono">$1</code>')
-      .replace(/```([^`]*)```/gim, '<pre class="bg-slate-100 p-3 rounded-lg overflow-x-auto mb-4"><code class="text-sm font-mono">$1</code></pre>')
-      .replace(/\[([^\]]*)\]\(([^\)]*)\)/gim, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 underline">$1</a>')
-      .replace(/^\* (.+)$/gim, '<li class="ml-4">$1</li>')
+      .replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mb-2 break-words">$1</h3>')
+      .replace(/^## (.*$)/gim, '<h2 class="text-xl font-semibold mb-3 break-words">$1</h2>')
+      .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mb-4 break-words">$1</h1>')
+      .replace(/\*\*(.*)\*\*/gim, '<strong class="font-semibold break-words">$1</strong>')
+      .replace(/\*(.*)\*/gim, '<em class="italic break-words">$1</em>')
+      .replace(/`([^`]*)`/gim, '<code class="bg-slate-100 px-1 py-0.5 rounded text-sm font-mono break-all">$1</code>')
+      .replace(/```([^`]*)```/gim, '<pre class="bg-slate-100 p-3 rounded-lg overflow-x-auto mb-4 max-w-full"><code class="text-sm font-mono block whitespace-pre-wrap break-words">$1</code></pre>')
+      // 🆕 图片需要特殊处理，在链接之前处理
+      .replace(/!\[([^\]]*)\]\(([^\)]*)\)/gim, (match, alt, src) => {
+        // 图片处理将在预处理步骤完成
+        return `<img src="${src}" alt="${alt}" class="max-w-full h-auto rounded-lg shadow-sm my-4" />`;
+      })
+      .replace(/\[([^\]]*)\]\(([^\)]*)\)/gim, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:text-blue-800 underline break-all">$1</a>')
+      .replace(/^\* (.+)$/gim, '<li class="ml-4 break-words">$1</li>')
       .replace(/(<li.*?<\/li>(\s*<li.*?<\/li>)*)/g, '<ul class="mb-3">$1</ul>')
       .replace(/\n/gim, '<br>');
   };
 
-  // 🆕 Pre-process markdown to handle relative /files/ links
-  const preProcessedContent = (children || '').replace(/(\]\()(\/files\/.*?)\)/g, (_match, p1, p2) => {
-    const apiBaseUrl = getCurrentApiBaseUrl();
-    // The base URL might be `http://localhost:8000/api`. Files are served from `/files`, so we need `http://localhost:8000`.
-    const fileBaseUrl = apiBaseUrl.replace('/api', '');
-    const fullUrl = `${fileBaseUrl}${p2}`;
-    console.log(`🔗 Converting relative file URL in Markdown: ${p2} -> ${fullUrl}`);
-    return `${p1}${fullUrl})`;
-  });
+  const pngCacheBuster = useMemo(() => Date.now().toString(), [children, taskId]);
 
-  const htmlContent = convertSimpleMarkdown(preProcessedContent);
-  
+  const htmlContent = useMemo(() => {
+    // 🆕 增强的预处理：处理图片和文件链接
+    let preProcessedContent = children || '';
+    const apiBaseUrl = getCurrentApiBaseUrl();
+
+    const applyNoCache = (inputUrl: string) => appendCacheBusterForPng(inputUrl, pngCacheBuster);
+
+    // 1. 处理图片链接 ![alt](path)
+    preProcessedContent = preProcessedContent.replace(/!\[([^\]]*)\]\(([^\)]+)\)/g, (match, alt, imagePath) => {
+      console.log('🖼️  Processing markdown image:', { imagePath, taskId });
+
+      // 如果是绝对HTTP/HTTPS URL
+      if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
+        const updatedUrl = applyNoCache(imagePath);
+        console.log('✅ Image is absolute URL, applying cache bust if needed:', updatedUrl);
+        return `![${alt}](${updatedUrl})`;
+      }
+
+      // 处理 /files/ 路径
+      if (imagePath.startsWith('/files/')) {
+        const fileBaseUrl = apiBaseUrl.replace('/api', '');
+        const fullUrl = `${fileBaseUrl}${imagePath}`;
+        const updatedUrl = applyNoCache(fullUrl);
+        console.log(`🔗 Converting /files/ image path: ${imagePath} -> ${updatedUrl}`);
+        return `![${alt}](${updatedUrl})`;
+      }
+
+      // 处理相对路径（如 ./image.png 或 image.png）和任务文件路径
+      // 清理路径：移除前导的 ./ 和 /
+      const cleanPath = imagePath.replace(/^\.\//, '').replace(/^\//, '');
+
+      if (!taskId) {
+        console.warn('⚠️  No taskId provided, cannot convert relative image path:', imagePath);
+        // 没有 taskId，尝试构建一个通用的 /api/files/ URL（如果后端支持）
+        // 或者返回一个占位图
+        return `![${alt}](data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><rect width="400" height="200" fill="%23f0f0f0"/><text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="%23999">Image: ${cleanPath} (No Task ID)</text></svg>)`;
+      }
+
+      const fullUrl = `${apiBaseUrl}/tasks/${taskId}/files/${encodeURIComponent(cleanPath)}`;
+      const updatedUrl = applyNoCache(fullUrl);
+      console.log(`🔗 Converting relative image path: ${imagePath} -> ${updatedUrl}`);
+      return `![${alt}](${updatedUrl})`;
+    });
+
+    // 2. 处理普通文件链接 [text](path)
+    preProcessedContent = preProcessedContent.replace(/\[([^\]]*)\]\(([^\)]+)\)/g, (match, text, linkPath) => {
+      // 如果是绝对HTTP/HTTPS URL、锚点或 mailto，保持不变
+      if (linkPath.startsWith('http://') || linkPath.startsWith('https://') ||
+          linkPath.startsWith('#') || linkPath.startsWith('mailto:')) {
+        return match;
+      }
+
+      // 如果是 /files/ 路径
+      if (linkPath.startsWith('/files/')) {
+        const fileBaseUrl = apiBaseUrl.replace('/api', '');
+        const fullUrl = `${fileBaseUrl}${linkPath}`;
+        console.log(`🔗 Converting /files/ link: ${linkPath} -> ${fullUrl}`);
+        return `[${text}](${fullUrl})`;
+      }
+
+      // 处理相对路径文件链接
+      const cleanPath = linkPath.replace(/^\.\//, '').replace(/^\//, '');
+
+      if (!taskId) {
+        console.warn('⚠️  No taskId provided, cannot convert relative file link:', linkPath);
+        // 返回一个禁用的链接
+        return `[${text}](#no-task-id)`;
+      }
+
+      const fullUrl = `${apiBaseUrl}/tasks/${taskId}/files/${encodeURIComponent(cleanPath)}`;
+      console.log(`🔗 Converting relative link: ${linkPath} -> ${fullUrl}`);
+      return `[${text}](${fullUrl})`;
+    });
+
+    return convertSimpleMarkdown(preProcessedContent);
+  }, [children, taskId, pngCacheBuster]);
+
   return (
-    <div 
-      className="text-slate-800 leading-relaxed max-w-none prose prose-slate overflow-y-auto h-full p-4"
+    <div
+      className="text-slate-800 leading-relaxed max-w-none prose prose-slate overflow-y-auto overflow-x-hidden h-full p-4 min-w-0"
+      style={{
+        wordWrap: 'break-word',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word',
+        maxWidth: '100%'
+      }}
       dangerouslySetInnerHTML={{ __html: htmlContent }}
     />
   );
@@ -212,6 +290,197 @@ class PathUtils {
     return lastSlash <= 0 ? '/' : path.substring(0, lastSlash);
   }
 }
+
+const shouldRewriteAssetUrl = (url?: string): boolean => {
+  if (!url) return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (/^(https?:|data:|blob:|javascript:|mailto:)/i.test(trimmed)) return false;
+  if (trimmed.startsWith('//')) return false;
+  return true;
+};
+
+// 🆕 检查文件是否为需要重写路径的资源文件
+const isAssetFile = (path: string): boolean => {
+  if (!path) return false;
+  const lowerPath = path.toLowerCase();
+
+  // 支持的资源文件扩展名
+  const assetExtensions = [
+    // 图片格式
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico',
+    // 视频格式
+    '.mp4', '.webm', '.avi', '.mov', '.mkv', '.flv', '.wmv',
+    // 音频格式
+    '.mp3', '.wav', '.ogg', '.m4a', '.aac',
+    // 文档格式
+    '.pdf',
+    // 数据文件
+    '.csv', '.json', '.xml',
+    // 其他常见资源
+    '.txt', '.md'
+  ];
+
+  return assetExtensions.some(ext => lowerPath.endsWith(ext));
+};
+
+const applyCacheBusterIfNeeded = (url: string, cacheKey: number | string) => {
+  try {
+    const base = url.split('?')[0].toLowerCase();
+    // 🆕 为所有图片格式添加缓存破坏参数，不仅仅是PNG
+    const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'];
+    const isImage = imageExtensions.some(ext => base.endsWith(ext));
+
+    if (isImage) {
+      return appendCacheBusterForPng(url, cacheKey);
+    }
+  } catch (error) {
+    console.warn('Failed to apply cache buster:', error);
+  }
+  return url;
+};
+
+const buildTaskAssetUrl = (rawUrl: string, taskId?: string, cacheKey: number | string = Date.now()): string => {
+  if (!shouldRewriteAssetUrl(rawUrl)) {
+    return rawUrl;
+  }
+
+  const trimmed = rawUrl.trim();
+  const [urlWithoutFragment, fragment] = trimmed.split('#', 2);
+  const [pathPart, query] = urlWithoutFragment.split('?', 2);
+  const normalizedPath = normalizeFilename(pathPart || '');
+
+  if (!normalizedPath) {
+    return trimmed;
+  }
+
+  // 🆕 使用新的 isAssetFile 函数检查是否为资源文件，而不是只检查 PNG
+  if (!isAssetFile(normalizedPath)) {
+    console.log(`🔍 Skipping non-asset file: ${normalizedPath}`);
+    return trimmed;
+  }
+
+  const encodedPath = normalizedPath
+    .split('/')
+    .filter(segment => segment.length > 0)
+    .map(segment => encodeURIComponent(segment))
+    .join('/');
+
+  const baseApi = getCurrentApiBaseUrl();
+  const encodedTaskId = taskId ? encodeURIComponent(taskId) : '';
+  let finalUrl = taskId
+    ? `${baseApi}/tasks/${encodedTaskId}/files/${encodedPath}`
+    : `${baseApi}/files/${encodedPath}`;
+
+  if (query) {
+    finalUrl += `?${query}`;
+  }
+
+  finalUrl = applyCacheBusterIfNeeded(finalUrl, cacheKey);
+
+  if (fragment) {
+    finalUrl += `#${fragment}`;
+  }
+
+  console.log(`🔗 Rewrote asset URL: ${rawUrl} -> ${finalUrl}`);
+  return finalUrl;
+};
+
+const rewriteHtmlAssetUrls = (
+  html: string,
+  taskId?: string,
+  options: { bodyOnly?: boolean; cacheKey?: number | string } = {}
+): string => {
+  if (!html) {
+    return html;
+  }
+
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    return html;
+  }
+
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const cacheKey = options.cacheKey ?? Date.now();
+
+    const rewriteAttribute = (element: Element, attribute: string) => {
+      const value = element.getAttribute(attribute);
+      if (!value) return;
+      const rewritten = buildTaskAssetUrl(value, taskId, cacheKey);
+      if (rewritten !== value) {
+        element.setAttribute(attribute, rewritten);
+      }
+    };
+
+    const rewriteSrcSet = (element: Element, attribute: string) => {
+      const srcSet = element.getAttribute(attribute);
+      if (!srcSet) return;
+      const rewritten = srcSet
+        .split(',')
+        .map(entry => {
+          const trimmed = entry.trim();
+          if (!trimmed) return trimmed;
+          const parts = trimmed.split(/\s+/);
+          const urlPart = parts[0];
+          const descriptor = parts.slice(1).join(' ');
+          const rewrittenUrl = buildTaskAssetUrl(urlPart, taskId, cacheKey);
+          return descriptor ? `${rewrittenUrl} ${descriptor}` : rewrittenUrl;
+        })
+        .join(', ');
+      element.setAttribute(attribute, rewritten);
+    };
+
+    const elementsWithSrc = doc.querySelectorAll('img, source, video, audio');
+    elementsWithSrc.forEach(element => {
+      rewriteAttribute(element, 'src');
+      rewriteSrcSet(element, 'srcset');
+    });
+
+    const ensureResponsiveStyle = () => {
+      const styleId = '__researstudio_html_asset_style__';
+      if (!doc.head) {
+        const head = doc.createElement('head');
+        doc.documentElement?.insertBefore(head, doc.body || null);
+      }
+      if (doc.head && !doc.head.querySelector(`#${styleId}`)) {
+        const styleElement = doc.createElement('style');
+        styleElement.id = styleId;
+        styleElement.textContent = `
+          :root, html, body {
+            max-width: 100%;
+            width: 100%;
+            box-sizing: border-box;
+            overflow-x: hidden;
+          }
+          img, video, canvas, iframe, object {
+            max-width: 100%;
+            height: auto;
+          }
+          figure {
+            max-width: 100%;
+          }
+        `;
+        doc.head.appendChild(styleElement);
+      }
+    };
+
+    ensureResponsiveStyle();
+
+    if (options.bodyOnly) {
+      return doc.body ? doc.body.innerHTML : html;
+    }
+
+    if (doc.documentElement) {
+      return doc.documentElement.outerHTML;
+    }
+
+    return doc.body ? doc.body.innerHTML : html;
+  } catch (error) {
+    console.warn('Failed to rewrite HTML asset URLs:', error);
+    return html;
+  }
+};
 
 // 🆕 搜索结果接口
 interface SearchResult {
@@ -313,12 +582,12 @@ class FileSystemManager {
   openFile(rawFilename: string, content: string = '', fileType?: string, metaData?: Partial<FileState>): FileState {
     const filename = normalizeFilename(rawFilename);
     const id = `file-${filename}-${Date.now()}`
-    
-    if (!this.files.has(filename)) {
-      const file: FileState = {
-        id,
-        filename,
-        content,
+
+      if (!this.files.has(filename)) {
+        const file: FileState = {
+          id,
+          filename,
+          content,
         originalContent: content,
         isDirty: false,
         isLoading: false,
@@ -329,19 +598,30 @@ class FileSystemManager {
         contentMode: metaData?.contentMode || 'text'
       }
       this.files.set(filename, file)
-      
+
       // 🆕 检查是否是特殊文件(.jsonsearch 或 Web.html)
       const isSpecialFile = filename.endsWith('.jsonsearch') || filename === 'Web.html'
       console.log(`📁 File "${filename}" is special file: ${isSpecialFile}`);
-      
+
       // 🆕 特殊文件不添加到标签页中，但仍然保存在文件系统中供处理使用
       if (!isSpecialFile && !this.openTabs.includes(filename)) {
         this.openTabs.push(filename)
       }
-    } else {
-      const existingFile = this.files.get(filename)!
-      existingFile.content = content
-      if (metaData) {
+      } else {
+        // 🆕 文件已存在：只有在文件未被编辑时才更新内容
+        const existingFile = this.files.get(filename)!
+
+        if (!existingFile.isDirty) {
+          // 文件没有未保存的更改，可以安全更新
+          console.log(`📝 Updating clean file: ${filename}`)
+          existingFile.content = content
+          existingFile.originalContent = content
+          existingFile.lastSaved = Date.now()
+        } else {
+          // 文件有未保存的更改，不覆盖用户的编辑
+          console.warn(`🔒 File has unsaved changes, not updating: ${filename}`)
+        }
+        if (metaData) {
         Object.assign(existingFile, metaData)
       }
     }
@@ -612,6 +892,7 @@ interface ComputerViewProps {
   maxTabs?: number;
   onFileSelect?: (filename: string) => void;
   onFileEditStateChange?: (hasChanges: boolean, activeFilename: string | null) => void;
+  onFileSaved?: (filename: string, content: string) => void;  // 🆕 新增：文件保存回调
   taskId?: string;
   activities?: any[];
   taskStartTime?: number;
@@ -643,6 +924,7 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
   maxTabs = 999,
   onFileSelect,
   onFileEditStateChange,
+  onFileSaved,  // 🆕 新增
   taskId,
   activities = [],
   taskStartTime,
@@ -658,8 +940,8 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
 
   const [selectedView, setSelectedView] = useState<string>('editing')
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['/']))
-  const [showMarkdownPreview, setShowMarkdownPreview] = useState(true)
-  const [showHtmlSourceEditor, setShowHtmlSourceEditor] = useState(false)
+  // 🆕 统一的文件视图模式：'preview'（渲染模式）或 'edit'（编辑模式）
+  const [fileViewMode, setFileViewMode] = useState<'preview' | 'edit'>('preview')
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   
   // 🆕 搜索和Web页面的状态管理
@@ -681,6 +963,15 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
   const terminalInputRef = useRef<HTMLInputElement>(null)
   const terminalDisplayRef = useRef<HTMLDivElement>(null)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
+
+  // 🆕 文件点击请求管理 - 用于取消过期的文件加载请求
+  const currentFileClickRef = useRef<{
+    filename: string | null;
+    abortController: AbortController | null;
+  }>({
+    filename: null,
+    abortController: null
+  });
 
   const [terminalInputValue, setTerminalInputValue] = useState('')
   const [displayedTerminalOutput, setDisplayedTerminalOutput] = useState<string[]>([])
@@ -791,20 +1082,32 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
           setSelectedView('web');
         } else {
           // 🔄 Live View: Processing regular file for editor
-          // 🚨 修复：只在文件不在缓存中时才从props创建新文件
+          // 🚨 修复：智能更新策略 - 创建新文件或更新干净文件
           const existingFile = fileSystem.getFile(currentFile);
           if (!existingFile) {
+            // 文件不存在，创建新文件
             console.log(`🆕 Creating new file from props: ${currentFile}`);
-          fileSystem.openFile(currentFile, fileContent, currentFileMetadata?.fileType, {
+            fileSystem.openFile(currentFile, fileContent, currentFileMetadata?.fileType, {
               isUrl: currentFileMetadata?.isUrl,
               isEditable: currentFileMetadata?.isEditable,
               contentMode: currentFileMetadata?.contentMode,
-          });
+            });
           } else {
-            console.log(`📁 File already cached, activating tab: ${currentFile}`);
+            // 🆕 文件存在，检查是否需要更新
+            if (!existingFile.isDirty && existingFile.content !== fileContent) {
+              // 文件干净且内容不同，更新内容
+              console.log(`🔄 Updating clean file in main effect: ${currentFile}`);
+              existingFile.content = fileContent;
+              existingFile.originalContent = fileContent;
+              fileSystem.notify();
+            } else if (existingFile.isDirty) {
+              console.log(`🔒 File has unsaved changes, not updating: ${currentFile}`);
+            } else {
+              console.log(`📁 File already cached with same content: ${currentFile}`);
+            }
           }
           fileSystem.setActiveTab(currentFile);
-        setSelectedView('editing');
+          setSelectedView('editing');
         }
       } else if (fileSystem.getActiveFile()) {
         setSelectedView('editing');
@@ -827,26 +1130,37 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
       fileSystem // 添加fileSystem以避免linting警告
   ]);
 
-  // 🚨 修复：实时更新文件内容 - 完全避免覆盖已缓存的文件
+  // 🚨 修复：实时更新文件内容 - 允许更新干净文件，保护用户编辑
   useEffect(() => {
     if (currentFile && fileContent !== undefined && fileContent !== null && isLive && !isViewingHistory) {
       const existingFile = fileSystem.getFile(currentFile)
-      // 🚨 修复：只有在文件完全不存在于缓存中时才从props更新
+
       if (!existingFile) {
-        // 传递文件元数据
+        // 文件不存在，创建新文件
         const metaData = currentFileMetadata ? {
           isUrl: currentFileMetadata.isUrl,
           isEditable: currentFileMetadata.isEditable,
           contentMode: currentFileMetadata.contentMode
         } : undefined;
-        
-        console.log(`🔄 Loading new file from props: ${currentFile}`);
+
+        console.log(`🆕 Loading new file from props: ${currentFile}`);
         fileSystem.openFile(currentFile, fileContent, currentFileMetadata?.fileType, metaData)
+      } else if (!existingFile.isDirty) {
+        // 🆕 文件存在但用户没有编辑（isDirty = false），允许更新
+        if (existingFile.content !== fileContent) {
+          console.log(`🔄 Updating clean file from props: ${currentFile}, old length: ${existingFile.content.length}, new length: ${fileContent.length}`);
+          existingFile.content = fileContent;
+          existingFile.originalContent = fileContent; // 更新 originalContent 以保持 isDirty = false
+          fileSystem.notify(); // 通知订阅者更新
+        } else {
+          console.log(`✅ File content unchanged: ${currentFile}`);
+        }
       } else {
-        console.log(`✅ File already cached, keeping local version: ${currentFile}`);
+        // 文件存在且用户有编辑（isDirty = true），保护用户内容
+        console.log(`🔒 Protecting dirty file, skipping update: ${currentFile}`);
       }
     }
-  }, [currentFile, fileContent, isLive, isViewingHistory, currentFileMetadata]);
+  }, [currentFile, fileContent, isLive, isViewingHistory, currentFileMetadata, fileSystem]);
 
   // 只有在用户首次进入且没有活动文件时才考虑显示Terminal
   useEffect(() => {
@@ -947,38 +1261,65 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
     return '';
   }, [isViewingHistory, historicalFilesContent, currentFile, fileContent, fileSystem]);
 
-  // 🆕 增强的文件点击处理逻辑 - 优先使用本地缓存，HTML文件自动切换到Web视图
+  // 🆕 增强的文件点击处理逻辑 - 优先使用本地缓存 + 竞态条件保护
   const handleFileClick = useCallback(async (rawFilename: string) => {
     const filename = normalizeFilename(rawFilename);
     console.log('File clicked:', filename, 'Is viewing history:', isViewingHistory);
-    
+
     if (showOnlyFileTree && onFileSelect) {
       onFileSelect(filename);
       return;
     }
+
+    // 🆕 取消之前的文件请求
+    if (currentFileClickRef.current.abortController) {
+      console.log('⚠️ Cancelling previous file click request:', currentFileClickRef.current.filename);
+      currentFileClickRef.current.abortController.abort();
+    }
+
+    // 🆕 创建新的 AbortController
+    const abortController = new AbortController();
+    currentFileClickRef.current = {
+      filename: filename,
+      abortController: abortController
+    };
 
     // 🆕 检查是否为HTML文件
     const isHtmlFile = filename.toLowerCase().endsWith('.html');
 
     // 🆕 优先检查本地缓存
     let content = '';
+    const fallbackMeta = normalizeFileMetadata(filename, {
+      file_type: fileSystem.detectFileType(filename)
+    });
     let fileMetadata: {
       isUrl?: boolean;
       isEditable?: boolean;
-      fileType?: string;
+      fileType?: FileState['fileType'];
       contentMode?: 'text' | 'url';
-    } = {};
-    
+    } = {
+      isUrl: fallbackMeta.is_url,
+      isEditable: fallbackMeta.is_editable,
+      fileType: fallbackMeta.file_type as FileState['fileType'],
+      contentMode: fallbackMeta.content_mode
+    };
+
     // 首先尝试从本地文件系统获取
     const existingFile = fileSystem.getFile(filename);
     if (existingFile) {
       console.log('📂 Using cached file content for:', filename, 'Content length:', existingFile.content.length, 'isDirty:', existingFile.isDirty);
       content = existingFile.content;
+      const normalizedMeta = normalizeFileMetadata(filename, {
+        file_type: existingFile.fileType,
+        is_url: existingFile.isUrl,
+        is_editable: existingFile.isEditable,
+        content_mode: existingFile.contentMode
+      });
       fileMetadata = {
-        isUrl: existingFile.isUrl,
-        isEditable: existingFile.isEditable,
-        fileType: existingFile.fileType,
-        contentMode: existingFile.contentMode
+        isUrl: normalizedMeta.is_url,
+        isEditable: normalizedMeta.is_editable,
+        fileType: normalizedMeta.file_type as FileState['fileType'],
+        contentMode: normalizedMeta.content_mode
       };
     } else if (isViewingHistory) {
       // 历史模式：从历史内容映射获取
@@ -988,23 +1329,50 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
       // 只有在本地缓存中没有文件时，才从后端获取
       try {
         console.log('File not in cache, fetching from backend for:', filename);
-        const response = await apiService.getFileContent(taskId, filename);
+
+        // 🆕 传递 signal 给 API
+        const response = await apiService.getFileContent(taskId, filename, abortController.signal);
+
+        // 🆕 验证请求是否被取消
+        if (abortController.signal.aborted) {
+          console.log('🚫 Request was cancelled, ignoring response for:', filename);
+          return;
+        }
+
+        // 🆕 验证这个响应是否仍然有效
+        if (currentFileClickRef.current.filename !== filename) {
+          console.log('⚠️ User has clicked another file, ignoring stale response for:', filename);
+          return;
+        }
+
         if (response.success && response.content !== undefined) {
-          content = response.content;
+          content = response.content ?? '';
           console.log('Successfully fetched file content from backend:', filename, 'Length:', content.length);
-          
+
           // 提取文件元数据
+          const normalizedMeta = normalizeFileMetadata(filename, {
+            file_type: response.file_type,
+            is_url: response.is_url,
+            is_editable: response.is_editable,
+            content_mode: response.content_mode
+          });
           fileMetadata = {
-            isUrl: response.is_url,
-                              isEditable: true, // Always editable for all files
-            fileType: response.file_type,
-            contentMode: response.content_mode
+            isUrl: normalizedMeta.is_url,
+            isEditable: normalizedMeta.is_editable,
+            fileType: normalizedMeta.file_type as FileState['fileType'],
+            contentMode: normalizedMeta.content_mode
           };
         } else {
           console.warn('Failed to fetch file content from backend:', response.message);
           content = getFileContent(filename);
         }
-      } catch (error) {
+      } catch (error: any) {
+        // 🆕 忽略 AbortError
+        if (error.name === 'AbortError') {
+          console.log('🚫 Fetch aborted for:', filename);
+          return;
+        }
+
         console.error('Error fetching file content from backend:', error);
         content = getFileContent(filename);
       }
@@ -1012,16 +1380,23 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
       content = getFileContent(filename);
     }
 
+    // 🆕 最后一次验证：确保文件名仍然匹配
+    if (currentFileClickRef.current.filename !== filename) {
+      console.log('⚠️ File click changed during processing, ignoring:', filename);
+      return;
+    }
+
     // 🆕 HTML文件特殊处理：重置源码编辑器状态
     if (isHtmlFile && !isViewingHistory) {
       // 重置HTML源码编辑器状态，确保默认显示预览
       setShowHtmlSourceEditor(false);
-      
+
       // 确保文件在缓存中
       if (!existingFile) {
         const metaData = {
           isUrl: fileMetadata.isUrl,
           isEditable: fileMetadata.isEditable,
+          fileType: fileMetadata.fileType,
           contentMode: fileMetadata.contentMode
         };
         fileSystem.openFile(filename, content, 'html', metaData);
@@ -1042,25 +1417,26 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
       const metaData = {
         isUrl: fileMetadata.isUrl,
         isEditable: fileMetadata.isEditable,
+        fileType: fileMetadata.fileType,
         contentMode: fileMetadata.contentMode
       };
-      
+
       fileSystem.openFile(filename, content, fileMetadata.fileType || fileSystem.detectFileType(filename), metaData);
     }
 
     if (onFileSelect) {
       onFileSelect(filename);
     }
-    
+
     setTimeout(() => {
       if (!isViewingHistory) {
         const tabs = fileSystem.getOpenTabs();
         const tabIndex = tabs.findIndex(tab => PathUtils.isSamePath(tab.filename, filename));
-      
+
         if (tabIndex !== -1 && tabsContainerRef.current) {
           const tabWidth = 120;
           const scrollPosition = tabIndex * tabWidth;
-        
+
           tabsContainerRef.current.scrollTo({
             left: scrollPosition,
             behavior: 'smooth'
@@ -1206,7 +1582,7 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
       if (result.success) {
         console.log(`✅ Save successful, updating file system for: ${targetFile.filename}`);
         fileSystem.saveFile(targetFile.filename)
-        
+
         // 🚨 验证保存后的状态
         const savedFile = fileSystem.getFile(targetFile.filename);
         console.log(`📝 Post-save verification:`, {
@@ -1215,7 +1591,12 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
           originalContentLength: savedFile?.originalContent.length,
           isDirty: savedFile?.isDirty
         });
-        
+
+        // 🆕 通知 Dashboard 文件已保存，更新它的缓存
+        if (onFileSaved && savedFile) {
+          onFileSaved(savedFile.filename, savedFile.content);
+        }
+
         setSaveStatus('saved')
         setTimeout(() => setSaveStatus('idle'), 2000)
       } else {
@@ -1626,7 +2007,36 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
   // 🆕 增强的文件内容渲染器 - 专门处理URL模式文件
   const FileContentRenderer = useCallback((props: { file: FileState }) => {
     const { file } = props;
-    const isEditable = file.isEditable !== false && !isViewingHistory;
+    const inferredFileType = useMemo<FileState['fileType']>(() => {
+      return fileSystem.detectFileType(file.filename);
+    }, [fileSystem, file.filename]);
+
+    const effectiveFileType = useMemo<FileState['fileType']>(() => {
+      if (!file.fileType) {
+        return inferredFileType;
+      }
+      if (file.fileType === inferredFileType) {
+        return file.fileType;
+      }
+      // 如果当前标记为 html / text 但后缀显示为其他类型，则使用推断类型
+      if (['html', 'text', 'markdown'].includes(file.fileType) && inferredFileType !== 'text') {
+        return inferredFileType;
+      }
+      return file.fileType;
+    }, [file.fileType, inferredFileType]);
+
+    if (file.fileType !== effectiveFileType) {
+      file.fileType = effectiveFileType;
+    }
+
+    const derivedIsUrl = useMemo(() => {
+      if (typeof file.isUrl === 'boolean') {
+        return file.isUrl;
+      }
+      return ['image', 'video', 'audio', 'pdf'].includes(effectiveFileType);
+    }, [file.isUrl, effectiveFileType]);
+
+    const isEditable = (file.isEditable !== undefined ? file.isEditable : !derivedIsUrl) && !isViewingHistory;
     // 🚨 修复：直接使用file.content，不再通过getFileContent获取，确保显示缓存中的最新内容
     const displayContent = file.content;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1644,7 +2054,190 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
       }
     }, [file.filename]); // 只在文件名变化时更新，避免编辑时重置
 
-    if (file.fileType === 'html') {
+    const isImageFile = effectiveFileType === 'image';
+    const isPngFile = isImageFile && file.filename.toLowerCase().endsWith('.png');
+
+    const isHtmlFile = effectiveFileType === 'html';
+
+    const processedHtmlContent = useMemo(() => {
+      if (!isHtmlFile || !displayContent) {
+        return '';
+      }
+      const cacheKey = file.lastSaved ?? displayContent.length;
+      return rewriteHtmlAssetUrls(displayContent, taskId, { cacheKey });
+    }, [isHtmlFile, displayContent, taskId, file.lastSaved]);
+
+    const pngCacheKey = useMemo<string | undefined>(() => {
+      if (!isPngFile) return undefined;
+      return Date.now().toString();
+    }, [isPngFile, file.filename, file.content, file.lastSaved]);
+
+    const baseImageUrl = useMemo(() => {
+      if (!isImageFile || !taskId) return '';
+      const encodedPath = file.filename
+        .split('/')
+        .map(segment => encodeURIComponent(segment))
+        .join('/');
+      return `${getCurrentApiBaseUrl()}/tasks/${taskId}/files/${encodedPath}`;
+    }, [isImageFile, taskId, file.filename]);
+
+    const imageUrl = useMemo(() => {
+      if (!isImageFile) return '';
+      if (!baseImageUrl) return '';
+      const cacheKey = pngCacheKey || file.lastSaved || Date.now();
+      return appendCacheBusterForPng(baseImageUrl, cacheKey);
+    }, [isImageFile, baseImageUrl, pngCacheKey, file.lastSaved]);
+
+    const downloadUrl = imageUrl;
+
+    // 🆕 图片类型渲染
+    if (effectiveFileType === 'image') {
+      return (
+        <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
+            <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Image Viewer
+            </h3>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">{file.filename}</span>
+              <a
+                href={downloadUrl}
+                download={file.filename}
+                className="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded transition-colors"
+              >
+                Download
+              </a>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-50/50 min-h-0 min-w-0">
+            <img
+              src={imageUrl}
+              alt={file.filename}
+              className="max-w-full max-h-full object-contain rounded-lg shadow-md"
+              style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto' }}
+              onError={(e) => {
+                console.error('Failed to load image:', file.filename);
+                (e.target as HTMLImageElement).src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="200" height="200"%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dy=".3em" fill="%23999"%3EImage Load Failed%3C/text%3E%3C/svg%3E';
+              }}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // 🆕 PDF 类型渲染
+    if (effectiveFileType === 'pdf') {
+      const pdfUrl = taskId
+        ? `${getCurrentApiBaseUrl()}/tasks/${taskId}/files/${file.filename.split('/').map(segment => encodeURIComponent(segment)).join('/')}`
+        : '';
+
+      return (
+        <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
+            <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              PDF Viewer
+            </h3>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">{file.filename}</span>
+              <a
+                href={pdfUrl}
+                download={file.filename}
+                className="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded transition-colors"
+              >
+                Download
+              </a>
+            </div>
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <iframe
+              src={pdfUrl}
+              className="w-full h-full border-none"
+              title={`PDF: ${file.filename}`}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    // 🆕 视频类型渲染
+    if (effectiveFileType === 'video') {
+      const videoUrl = taskId
+        ? `${getCurrentApiBaseUrl()}/tasks/${taskId}/files/${encodeURIComponent(file.filename)}`
+        : '';
+
+      return (
+        <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
+            <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Video Player
+            </h3>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">{file.filename}</span>
+              <a
+                href={videoUrl}
+                download={file.filename}
+                className="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded transition-colors"
+              >
+                Download
+              </a>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-50/50 min-h-0 min-w-0">
+            <video
+              src={videoUrl}
+              controls
+              className="max-w-full max-h-full rounded-lg shadow-md"
+              style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto' }}
+            >
+              Your browser does not support the video tag.
+            </video>
+          </div>
+        </div>
+      );
+    }
+
+    // 🆕 音频类型渲染
+    if (effectiveFileType === 'audio') {
+      const audioUrl = taskId
+        ? `${getCurrentApiBaseUrl()}/tasks/${taskId}/files/${encodeURIComponent(file.filename)}`
+        : '';
+
+      return (
+        <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
+            <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Audio Player
+            </h3>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">{file.filename}</span>
+              <a
+                href={audioUrl}
+                download={file.filename}
+                className="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded transition-colors"
+              >
+                Download
+              </a>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-50/50 min-h-0 min-w-0">
+            <audio
+              src={audioUrl}
+              controls
+              className="w-full max-w-2xl"
+              style={{ maxWidth: '100%' }}
+            >
+              Your browser does not support the audio tag.
+            </audio>
+          </div>
+        </div>
+      );
+    }
+
+    if (isHtmlFile) {
       const isValidUrl = (content: string): boolean => {
         try {
           new URL(content);
@@ -1675,50 +2268,46 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
           </div>
         );
       } else {
-        // 🆕 HTML文件默认显示Web预览，而不是代码编辑器
+        // 🆕 HTML文件默认显示Web预览，统一的模式切换
         return (
           <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
             <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
               <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
                 <Globe className="h-4 w-4" />
-                HTML Preview
+                HTML File
               </h3>
               <div className="flex items-center gap-3">
-                {/* Edit Source Button */}
+                {/* 🆕 统一的模式切换按钮 */}
                 <button
-                  onClick={() => {
-                    // 切换到editing视图显示源码编辑器
-                    setShowHtmlSourceEditor(true);
-                  }}
-                  className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
+                  onClick={() => setFileViewMode(fileViewMode === 'preview' ? 'edit' : 'preview')}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors duration-200 ${
+                    fileViewMode === 'preview'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-200/60 text-slate-600 hover:bg-slate-300/60'
+                  }`}
                 >
-                  <Edit className="h-3 w-3" />
-                  <span>Edit Source</span>
+                  {fileViewMode === 'preview' ? 'Edit Mode' : 'Preview Mode'}
                 </button>
                 <div className="text-xs text-slate-500">
-                  Preview Mode
+                  {fileViewMode === 'preview' ? 'Preview' : 'Editable'}
                 </div>
               </div>
             </div>
-            
-            {/* 🆕 条件渲染：默认显示Web预览，点击按钮后显示源码编辑器 */}
-            {showHtmlSourceEditor ? (
-              <div className="flex-1 flex flex-col">
-                <div className="p-2 bg-amber-50/80 border-b border-amber-200/50">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-amber-700 flex items-center gap-1">
-                      <FileText className="h-3 w-3" />
-                      Source Editor Mode
-                    </span>
-                    <button
-                      onClick={() => setShowHtmlSourceEditor(false)}
-                      className="text-xs px-2 py-1 bg-amber-200/60 hover:bg-amber-300/60 text-amber-800 rounded transition-colors"
-                    >
-                      Back to Preview
-                    </button>
-                  </div>
+
+            {/* 🆕 条件渲染：预览模式显示Web预览，编辑模式显示源码编辑器 */}
+            <div className="flex-1 overflow-hidden">
+              {fileViewMode === 'preview' ? (
+                <div className="h-full bg-white">
+                  <iframe
+                    key={`html-preview-${file.filename}-${processedHtmlContent.length}`}
+                    srcDoc={processedHtmlContent}
+                    className="w-full h-full border-none"
+                    title={`HTML Preview: ${file.filename}`}
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-modals allow-popups-to-escape-sandbox allow-downloads"
+                  />
                 </div>
-                <div className="flex-1 p-4 overflow-hidden">
+              ) : (
+                <div className="h-full p-4 overflow-hidden">
                   <textarea
                     key={`${file.filename}-html-editor`}
                     ref={(ref) => {
@@ -1728,88 +2317,112 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
                       }
                     }}
                     className="w-full h-full border-none resize-none focus:outline-none font-mono text-sm"
+                    style={{
+                      whiteSpace: 'pre-wrap',
+                      wordWrap: 'break-word',
+                      overflowWrap: 'break-word'
+                    }}
                     defaultValue={displayContent}
                     onChange={(e) => handleFileContentChange(file.filename, e.target.value)}
                     placeholder="Edit HTML content..."
                   />
                 </div>
-              </div>
-            ) : (
-              <div className="flex-1 bg-white">
-                <iframe
-                  key={`html-preview-${file.filename}-${displayContent.length}`}
-                  srcDoc={displayContent}
-                  className="w-full h-full border-none"
-                  title={`HTML Preview: ${file.filename}`}
-                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-modals allow-popups-to-escape-sandbox allow-downloads"
-                />
-              </div>
-            )}
+              )}
+            </div>
           </div>
         );
       }
     }
 
-    if (file.fileType === 'python') {
+    if (effectiveFileType === 'python') {
       return (
         <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
           <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
             <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
               <FileText className="h-4 w-4" />
-              Python Editor
+              Python File
             </h3>
-            <div className="text-xs text-slate-500">
-              Editable
+            <div className="flex items-center gap-3">
+              {/* 🆕 统一的模式切换按钮 */}
+              <button
+                onClick={() => setFileViewMode(fileViewMode === 'preview' ? 'edit' : 'preview')}
+                className={`px-3 py-1.5 text-xs rounded-lg transition-colors duration-200 ${
+                  fileViewMode === 'preview'
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-slate-200/60 text-slate-600 hover:bg-slate-300/60'
+                }`}
+              >
+                {fileViewMode === 'preview' ? 'Edit Mode' : 'Preview Mode'}
+              </button>
+              <div className="text-xs text-slate-500">
+                {fileViewMode === 'preview' ? 'Preview' : 'Editable'}
+              </div>
             </div>
           </div>
-          <div className="flex-1 p-4 overflow-hidden">
-            <textarea
-              key={`${file.filename}-python-editor`}
-              ref={(ref) => {
-                textareaRef.current = ref;
-                if (ref && fileSystem.getActiveFile()?.filename === file.filename) {
-                  activeTextareaRef.current = ref;
-                }
-              }}
-              className="w-full h-full border-none resize-none focus:outline-none font-mono text-sm"
-              defaultValue={displayContent}
-              onChange={(e) => handleFileContentChange(file.filename, e.target.value)}
-              placeholder="Edit Python code..."
-            />
+          <div className="flex-1 overflow-hidden">
+        {fileViewMode === 'preview' ? (
+          // 🆕 预览模式：语法高亮展示
+          <div className="h-full overflow-auto bg-slate-50/50">
+            <PythonSyntaxHighlighter>{displayContent}</PythonSyntaxHighlighter>
+          </div>
+            ) : (
+              // 编辑模式：可编辑的 textarea
+              <div className="h-full p-4 overflow-hidden">
+                <textarea
+                  key={`${file.filename}-python-editor`}
+                  ref={(ref) => {
+                    textareaRef.current = ref;
+                    if (ref && fileSystem.getActiveFile()?.filename === file.filename) {
+                      activeTextareaRef.current = ref;
+                    }
+                  }}
+                  className="w-full h-full border-none resize-none focus:outline-none font-mono text-sm"
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word'
+                  }}
+                  defaultValue={displayContent}
+                  onChange={(e) => handleFileContentChange(file.filename, e.target.value)}
+                  placeholder="Edit Python code..."
+                />
+              </div>
+            )}
           </div>
         </div>
       );
     }
 
-    if (file.fileType === 'markdown') {
+    if (effectiveFileType === 'markdown') {
       return (
         <div className="h-full flex flex-col bg-white/90 backdrop-blur-sm rounded-lg shadow-sm overflow-hidden">
           <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
             <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
               <FileText className="h-4 w-4" />
-              Markdown Editor
+              Markdown File
             </h3>
             <div className="flex items-center gap-3">
+              {/* 🆕 统一的模式切换按钮 */}
               <button
-                onClick={() => setShowMarkdownPreview(!showMarkdownPreview)}
+                onClick={() => setFileViewMode(fileViewMode === 'preview' ? 'edit' : 'preview')}
                 className={`px-3 py-1.5 text-xs rounded-lg transition-colors duration-200 ${
-                  showMarkdownPreview 
-                    ? 'bg-blue-500 text-white' 
+                  fileViewMode === 'preview'
+                    ? 'bg-blue-500 text-white'
                     : 'bg-slate-200/60 text-slate-600 hover:bg-slate-300/60'
                 }`}
               >
-                {showMarkdownPreview ? 'Hide Preview' : 'Show Preview'}
+                {fileViewMode === 'preview' ? 'Edit Mode' : 'Preview Mode'}
               </button>
               <div className="text-xs text-slate-500">
-                Editable
+                {fileViewMode === 'preview' ? 'Preview' : 'Editable'}
               </div>
             </div>
           </div>
           <div className="flex-1 overflow-hidden">
-            {showMarkdownPreview ? (
-              <MarkdownRenderer>{displayContent}</MarkdownRenderer>
+            {fileViewMode === 'preview' ? (
+              <MarkdownRenderer taskId={taskId}>{displayContent}</MarkdownRenderer>
             ) : (
-              <div className="h-full p-4">
+              <div className="h-full p-4 overflow-hidden">
                 <textarea
                   key={`${file.filename}-markdown-editor`}
                   ref={(ref) => {
@@ -1819,6 +2432,11 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
                     }
                   }}
                   className="w-full h-full border-none resize-none focus:outline-none font-mono text-sm"
+                  style={{
+                    whiteSpace: 'pre-wrap',
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word'
+                  }}
                   defaultValue={displayContent}
                   onChange={(e) => handleFileContentChange(file.filename, e.target.value)}
                   placeholder="Edit markdown content..."
@@ -1835,30 +2453,60 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
         <div className="flex items-center justify-between p-3 border-b border-slate-200/60 bg-white/60">
           <h3 className="text-sm font-medium text-slate-700 flex items-center gap-2">
             <FileText className="h-4 w-4" />
-            Text Editor
+            {effectiveFileType === 'text' ? 'Text File' : `${effectiveFileType.toUpperCase()} File`}
           </h3>
-          <div className="text-xs text-slate-500">
-            Editable
+          <div className="flex items-center gap-3">
+            {/* 🆕 统一的模式切换按钮 */}
+            <button
+              onClick={() => setFileViewMode(fileViewMode === 'preview' ? 'edit' : 'preview')}
+              className={`px-3 py-1.5 text-xs rounded-lg transition-colors duration-200 ${
+                fileViewMode === 'preview'
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-slate-200/60 text-slate-600 hover:bg-slate-300/60'
+              }`}
+            >
+              {fileViewMode === 'preview' ? 'Edit Mode' : 'Preview Mode'}
+            </button>
+            <div className="text-xs text-slate-500">
+              {fileViewMode === 'preview' ? 'Preview' : 'Editable'}
+            </div>
           </div>
         </div>
-        <div className="flex-1 p-4 overflow-hidden">
-          <textarea
-            key={`${file.filename}-text-editor`}
-            ref={(ref) => {
-              textareaRef.current = ref;
-              if (ref && fileSystem.getActiveFile()?.filename === file.filename) {
-                activeTextareaRef.current = ref;
-              }
-            }}
-            className="w-full h-full border-none resize-none focus:outline-none font-mono text-sm"
-            defaultValue={displayContent}
-            onChange={(e) => handleFileContentChange(file.filename, e.target.value)}
-            placeholder="Edit file content..."
-          />
+        <div className="flex-1 overflow-hidden">
+          {fileViewMode === 'preview' ? (
+            // 🆕 预览模式：只读文本显示
+            <div className="h-full p-4 overflow-auto bg-slate-50/50">
+              <pre className="font-mono text-sm text-slate-800 whitespace-pre-wrap break-words">
+                {displayContent}
+              </pre>
+            </div>
+          ) : (
+            // 编辑模式：可编辑的 textarea
+            <div className="h-full p-4 overflow-hidden">
+              <textarea
+                key={`${file.filename}-text-editor`}
+                ref={(ref) => {
+                  textareaRef.current = ref;
+                  if (ref && fileSystem.getActiveFile()?.filename === file.filename) {
+                    activeTextareaRef.current = ref;
+                  }
+                }}
+                className="w-full h-full border-none resize-none focus:outline-none font-mono text-sm"
+                style={{
+                  whiteSpace: 'pre-wrap',
+                  wordWrap: 'break-word',
+                  overflowWrap: 'break-word'
+                }}
+                defaultValue={displayContent}
+                onChange={(e) => handleFileContentChange(file.filename, e.target.value)}
+                placeholder="Edit file content..."
+              />
+            </div>
+          )}
         </div>
       </div>
     )
-  }, [getFileContent, isViewingHistory, showMarkdownPreview, handleFileContentChange]);
+  }, [getFileContent, isViewingHistory, fileViewMode, handleFileContentChange, taskId]);
 
   // 🚨 移除会覆盖用户输入的历史恢复逻辑
   // 历史内容现在通过getFileContent函数动态获取，不再自动覆盖fileSystem中的内容
@@ -2282,23 +2930,27 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
                   {/* Web内容显示区域 */}
                   <div className="flex-1 relative bg-white/50 backdrop-blur-sm">
                     {webContent.endsWith('.html') ? (
-                      // 🆕 HTML文件内容显示 - 动态更新内容
-                      <iframe
-                        key={`html-preview-${webContent}-${(() => {
-                          const htmlFile = fileSystem.getFile(webContent);
-                          return htmlFile ? htmlFile.content.length : 0;
-                        })()}`} // 🚨 添加key确保内容变化时重新渲染
-                        srcDoc={(() => {
-                          const htmlFile = fileSystem.getFile(webContent);
-                          return htmlFile ? htmlFile.content : '';
-                        })()}
-                        className="w-full h-full border-0 rounded-none"
-                        title={`HTML Preview: ${webContent}`}
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-modals allow-popups-to-escape-sandbox allow-downloads"
-                        style={{ minHeight: '600px' }}
-                        onLoad={() => {}} // 🌐 HTML iframe loaded successfully
-                        onError={() => {}} // 🌐 HTML iframe failed to load
-                      />
+                      (() => {
+                        const htmlFile = fileSystem.getFile(webContent);
+                        const processedHtml = htmlFile
+                          ? rewriteHtmlAssetUrls(htmlFile.content, taskId, {
+                              cacheKey: htmlFile.lastSaved ?? htmlFile.content.length
+                            })
+                          : '';
+                        const previewKey = `html-preview-${webContent}-${processedHtml.length}`;
+                        return (
+                          <iframe
+                            key={previewKey} // 🚨 添加key确保内容变化时重新渲染
+                            srcDoc={processedHtml}
+                            className="w-full h-full border-0 rounded-none"
+                            title={`HTML Preview: ${webContent}`}
+                            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-modals allow-popups-to-escape-sandbox allow-downloads"
+                            style={{ minHeight: '0', height: '100%', maxHeight: '100%' }}
+                            onLoad={() => {}} // 🌐 HTML iframe loaded successfully
+                            onError={() => {}} // 🌐 HTML iframe failed to load
+                          />
+                        );
+                      })()
                     ) : (
                       // 普通URL内容显示
                     <iframe
@@ -2306,7 +2958,7 @@ export const ComputerView = forwardRef<ComputerViewRef, ComputerViewProps>(({
                       className="w-full h-full border-0 rounded-none"
                       title="Web Content Display"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-modals allow-popups-to-escape-sandbox allow-downloads"
-                      style={{ minHeight: '600px' }}
+                      style={{ minHeight: '0', height: '100%', maxHeight: '100%' }}
                         onLoad={() => {}} // 🌐 Iframe loaded successfully
                         onError={() => {}} // 🌐 Iframe failed to load
                     />

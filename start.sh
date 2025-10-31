@@ -97,34 +97,22 @@ if ! kill -0 $BACKEND_PID 2>/dev/null; then
     exit 1
 fi
 
-echo -e "   ${GREEN}✓${NC} Backend running on http://0.0.0.0:$BACKEND_PORT"
+echo -e "   ${GREEN}✓${NC} Backend running on http://localhost:$BACKEND_PORT"
 
 # Start frontend
 echo -e "${GREEN}[2/2]${NC} Starting frontend server on port $FRONTEND_PORT..."
 cd frontend
 
-# Update .env.local with correct backend port
-if [ -f ".env.template" ]; then
-    cp .env.template .env.local
-    sed -i "s/BACKEND_PORT/$BACKEND_PORT/g" .env.local
-    echo -e "${YELLOW}[INFO]${NC} Updated .env.local with backend port: $BACKEND_PORT"
-else
-    # Create .env.local if template doesn't exist
-    cat > .env.local << EOF
-NEXT_PUBLIC_API_URL=http://localhost:$BACKEND_PORT/api
-
-NODE_ENV=development
-
-NEXT_PUBLIC_APP_NAME=Manus Pro PLUS
-NEXT_PUBLIC_APP_VERSION=1.0.0
-EOF
-    echo -e "${YELLOW}[INFO]${NC} Created .env.local with backend port: $BACKEND_PORT"
-fi
-
 # Update frontend port
 export PORT=$FRONTEND_PORT
 if [ "$FRONTEND_PORT" != "3000" ]; then
     echo -e "${YELLOW}[INFO]${NC} Using custom frontend port: $FRONTEND_PORT"
+fi
+
+# Update API URL in environment if backend port changed
+if [ "$BACKEND_PORT" != "5000" ]; then
+    export NEXT_PUBLIC_API_URL="http://localhost:$BACKEND_PORT"
+    echo -e "${YELLOW}[INFO]${NC} Updated API URL to: http://localhost:$BACKEND_PORT"
 fi
 
 npm run dev -- --port $FRONTEND_PORT > "../$LOG_DIR/frontend.log" 2>&1 &
@@ -146,8 +134,8 @@ fi
 echo ""
 echo -e "${GREEN}✅ ResearStudio is running!${NC}"
 echo ""
-echo "  Frontend: http://0.0.0.0:$FRONTEND_PORT"
-echo "  Backend:  http://0.0.0.0:$BACKEND_PORT"
+echo "  Frontend: http://localhost:$FRONTEND_PORT"
+echo "  Backend:  http://localhost:$BACKEND_PORT"
 echo "  Session:  $SESSION_ID"
 echo "  Logs:     $LOG_DIR/"
 echo ""

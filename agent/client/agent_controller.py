@@ -399,6 +399,23 @@ def is_editable_file(filename: str) -> bool:
     file_ext = Path(filename).suffix.lower()
     return file_ext in EDITABLE_FILE_TYPES
 
+def detect_file_type(filename: str) -> str:
+    """Classify file type for frontend rendering."""
+    file_ext = Path(filename).suffix.lower()
+    if file_ext in {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'}:
+        return 'image'
+    if file_ext in {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv'}:
+        return 'video'
+    if file_ext == '.pdf':
+        return 'pdf'
+    if file_ext == '.html':
+        return 'html'
+    if file_ext == '.md':
+        return 'markdown'
+    if file_ext in {'.mp3', '.wav', '.aac', '.ogg', '.m4a'}:
+        return 'audio'
+    return 'text'
+
 # ==============================================================================
 # Global tool service management - new addition
 # ==============================================================================
@@ -868,7 +885,8 @@ class HierarchicalClient:
     def emit_final_answer(self, content: str):
         """Sends the final answer to the frontend."""
         answer_data = content
-        self.emit_activity(f"{answer_data}", "activity")
+        final_activity_id = self.emit_activity(f"{answer_data}", "activity")
+        self.emit_activity_update(final_activity_id, "completed")
         self._send_message("final_answer", {'content': answer_data})
 
     def emit_task_update(self, status: str, **kwargs):
@@ -1419,13 +1437,25 @@ Status: 🟡 In Progress
             # English: 视频工具：process视频URL或file
             if "http" in content:
                 # English: 如果result包含URL，直接发送
-                self.emit_activity(f"Video processing complete: {content}", "video", url=content)
+                video_activity_id = self.emit_activity(
+                    f"Video processing complete: {content}",
+                    "video",
+                    status="completed",
+                    url=content
+                )
+                self.emit_activity_update(video_activity_id, "completed")
             else:
                 # English: 否则save为本地fileURL
                 video_filename = f"video_output_{int(time.time())}.mp4"
                 video_url = f"/api/file_load/{self.task_id}/{video_filename}"
                 self.emit_file_update(video_filename, content, is_url=True)
-                self.emit_activity(f"Video saved: {video_url}", "video", url=video_url)
+                video_saved_activity_id = self.emit_activity(
+                    f"Video saved: {video_url}",
+                    "video",
+                    status="completed",
+                    url=video_url
+                )
+                self.emit_activity_update(video_saved_activity_id, "completed")
                 
         elif tool_name in ["image_tool", "code_tool"]:
             content = str(result_msg.content)
@@ -1436,7 +1466,13 @@ Status: 🟡 In Progress
         else:
             content = str(result_msg.content)
             # English: 其他工具：发送一般活动status
-            self.emit_activity(f"Tool {tool_name} execution finished", "activity", result=content)
+            generic_activity_id = self.emit_activity(
+                f"Tool {tool_name} execution finished",
+                "activity",
+                status="completed",
+                result=content
+            )
+            self.emit_activity_update(generic_activity_id, "completed")
 
     def emit_file_deleted(self, filename: str):
         """Sends a file deletion event."""
@@ -1888,37 +1924,34 @@ def connect_task(task_id):
 def get_file_content(task_id, filename):
     """getfilecontent"""
     try:
-        # check任务
-        workspace_dir = None
-        if task_id in active_tasks:
-            workspace_dir = Path(active_tasks[task_id]['workspace_dir'])
-        elif task_id in completed_tasks_history:
-            workspace_dir = Path("workspaces") / task_id
-        elif task_id in task_clients:
-            workspace_dir = task_clients[task_id].workspace_dir
-        
+        workspace_dir = _get_workspace_dir(task_id)
         if not workspace_dir:
             return jsonify({'error': 'Task not found'}), 404
-
-        # English: 查找file
-        file_path = workspace_dir / "workspace" / filename
+        file_path = _resolve_workspace_file_path(Path(workspace_dir), filename)
+        if not file_path:
+            return jsonify({'error': 'File not found'}), 404
         log_block("file_path", str(file_path))
         if not file_path.exists():
             return jsonify({'error': 'File not found'}), 404
 
         # readfilecontent
         try:
-            if should_use_url_mode(filename):
+            if should_use_url_mode(file_path.name):
                 # English: 二进制file，返回为download
                 return send_file(str(file_path), as_attachment=False)
             else:
                 # English: 文本file，返回content
                 content = file_path.read_text(encoding='utf-8')
+                file_type = detect_file_type(file_path.name)
+                is_url_mode = should_use_url_mode(file_path.name)
                 return jsonify({
                     'success': True,
                     'content': content,
                     'filename': filename,
-                    'file_type': Path(filename).suffix[1:] if Path(filename).suffix else 'txt'
+                    'file_type': file_type,
+                    'is_url': is_url_mode,
+                    'is_editable': is_editable_file(file_path.name),
+                    'content_mode': 'url' if is_url_mode else 'text'
                 })
         except Exception as e:
             return jsonify({'error': f'Error reading file: {str(e)}'}), 500
@@ -1931,37 +1964,34 @@ def get_file_content(task_id, filename):
 def get_files_content(task_id, filename):
     """getfilecontent"""
     try:
-        # check任务
-        workspace_dir = None
-        if task_id in active_tasks:
-            workspace_dir = Path(active_tasks[task_id]['workspace_dir'])
-        elif task_id in completed_tasks_history:
-            workspace_dir = Path("workspaces") / task_id
-        elif task_id in task_clients:
-            workspace_dir = task_clients[task_id].workspace_dir
-        
+        workspace_dir = _get_workspace_dir(task_id)
         if not workspace_dir:
             return jsonify({'error': 'Task not found'}), 404
-
-        # English: 查找file
-        file_path = '/root/demo/AGENT/agent/' / workspace_dir / "workspace" / filename
-        log_block("file_path", file_path)
+        file_path = _resolve_workspace_file_path(Path(workspace_dir), filename)
+        if not file_path:
+            return jsonify({'error': 'File not found'}), 404
+        log_block("file_path", str(file_path))
         if not file_path.exists():
             return jsonify({'error': 'File not found'}), 404
 
         # readfilecontent
         try:
-            if should_use_url_mode(filename):
+            if should_use_url_mode(file_path.name):
                 # English: 二进制file，返回为download
                 return send_file(str(file_path), as_attachment=False)
             else:
                 # English: 文本file，返回content
                 content = file_path.read_text(encoding='utf-8')
+                file_type = detect_file_type(file_path.name)
+                is_url_mode = should_use_url_mode(file_path.name)
                 return jsonify({
                     'success': True,
                     'content': content,
                     'filename': filename,
-                    'file_type': Path(filename).suffix[1:] if Path(filename).suffix else 'txt'
+                    'file_type': file_type,
+                    'is_url': is_url_mode,
+                    'is_editable': is_editable_file(file_path.name),
+                    'content_mode': 'url' if is_url_mode else 'text'
                 })
         except Exception as e:
             return jsonify({'error': f'Error reading file: {str(e)}'}), 500
@@ -2102,6 +2132,24 @@ def _get_workspace_dir(task_id: str) -> Optional[Path]:
         if potential_dir.exists():
             workspace_dir = potential_dir
     return workspace_dir
+
+def _resolve_workspace_file_path(workspace_dir: Path, filename: str) -> Optional[Path]:
+    """Resolve a file path within a task workspace safely."""
+    try:
+        workspace_root = Path(workspace_dir).resolve() / "workspace"
+        if not workspace_root.exists():
+            return None
+        # Ensure resolved path stays within the workspace directory to avoid traversal issues
+        candidate_path = (workspace_root / filename).resolve()
+        if not str(candidate_path).startswith(str(workspace_root)):
+            logger.warning(f"Attempted access outside workspace: {candidate_path}")
+            return None
+        if not candidate_path.exists():
+            return None
+        return candidate_path
+    except Exception as e:
+        logger.warning(f"Failed to resolve workspace file path for {filename}: {e}")
+        return None
 
 @app.route('/api/tasks/<task_id>/pause', methods=['POST', 'OPTIONS'])
 def pause_task(task_id):

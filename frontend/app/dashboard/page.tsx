@@ -8,7 +8,7 @@ import { ConnectionStatus } from "@/components/ui/connection-status"
 import { Terminal, AlertCircle, GitBranch, Activity, CheckCircle2, XCircle, Pause, Play, ChevronLeft, ChevronRight, PanelLeftClose, PanelRightClose, Sparkles, Download, Save, RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { useTaskStream, Activity as ApiActivity, FileStructureNode, apiService, getCurrentApiBaseUrl } from "@/lib/api"
+import { useTaskStream, Activity as ApiActivity, FileStructureNode, apiService, getCurrentApiBaseUrl, normalizeFileMetadata } from "@/lib/api"
 import { useIsMobile } from "@/lib/hooks"
 import { normalizeFilename } from '@/lib/utils'
 
@@ -47,7 +47,21 @@ function DashboardPageContent() {
   const [layoutMode, setLayoutMode] = useState<'both' | 'chat-only' | 'workspace-only'>('both')
 
   // 添加文件选择状态
-  const [selectedFile, setSelectedFile] = useState<{ filename: string; content: string } | null>(null)
+  const [selectedFile, setSelectedFile] = useState<{
+    filename: string;
+    content: string;
+    metadata?: {
+      isUrl?: boolean;
+      isEditable?: boolean;
+      fileType?: string;
+      contentMode?: 'text' | 'url';
+    };
+  } | null>(null)
+
+  const currentFileRequestRef = useRef<{ filename: string | null; requestId: number }>({
+    filename: null,
+    requestId: 0
+  });
 
   // 文件编辑状态
   const [fileEditState, setFileEditState] = useState<{ hasChanges: boolean; activeFilename: string | null }>({
@@ -278,102 +292,78 @@ function DashboardPageContent() {
     }
   }, [history.length]);
 
-  // 🆕 增强的文件选择处理 - 优先使用本地缓存
   const handleFileSelect = useCallback(async (rawFilename: string) => {
     const filename = normalizeFilename(rawFilename);
     console.log('File selected:', filename, 'Is viewing history:', isViewingHistory);
-    
+
+    const requestId = Date.now();
+    currentFileRequestRef.current = { filename, requestId };
+
     let content = '';
-    let fileMetadata: {
-      isUrl?: boolean;
-      isEditable?: boolean;
-      fileType?: string;
-      contentMode?: 'text' | 'url';
-    } = {};
-    
+    let normalizedMetadata = normalizeFileMetadata(filename);
+
     if (isViewingHistory && currentHistoryIndex >= 0 && history[currentHistoryIndex]) {
-      // 🆕 历史模式：从历史快照中获取文件内容
       const historicalSnapshot = history[currentHistoryIndex];
       content = historicalSnapshot.allFilesContent.get(filename) || '';
       console.log('Historical file content for', filename, ':', content.length, 'characters');
     } else {
-      // 🆕 实时模式：优先检查本地缓存
-      const cachedContent = allFilesContentMap.get(filename);
-      
-      if (cachedContent !== undefined) {
-        // 使用本地缓存的内容
-        content = cachedContent;
-        console.log('💾 Using cached file content for:', filename, 'Length:', content.length);
-        
-        // 如果是当前正在显示的文件，还要检查是否有更新的内容
-        if (normalizeFilename(liveTaskState.currentFile) === filename && liveTaskState.fileContent) {
-          if (liveTaskState.fileContent !== cachedContent) {
-            console.log('📝 Current file has newer content, updating cache:', filename);
-            content = liveTaskState.fileContent;
-            // 更新缓存
+      let fetched = false;
+      if (taskId) {
+        try {
+          const response = await apiService.getFileContent(taskId, filename);
+          if (response.success) {
+            content = response.content ?? '';
+            normalizedMetadata = normalizeFileMetadata(filename, {
+              file_type: response.file_type,
+              is_url: response.is_url,
+              is_editable: response.is_editable,
+              content_mode: response.content_mode
+            });
+            fetched = true;
             setAllFilesContentMap(prev => {
               const newMap = new Map(prev);
               newMap.set(filename, content);
               return newMap;
             });
-          }
-        }
-      } else {
-        // 🆕 文件不在缓存中，从后端获取
-        if (taskId) {
-          try {
-            console.log('🌐 File not in cache, fetching from backend for:', filename);
-            const response = await apiService.getFileContent(taskId, filename);
-            if (response.success && response.content !== undefined) {
-              content = response.content;
-              console.log('✅ Successfully fetched and cached file content:', filename, 'Length:', content.length);
-              
-              // 提取文件元数据
-              fileMetadata = {
-                isUrl: response.is_url,
-                isEditable: response.is_editable,
-                fileType: response.file_type,
-                contentMode: response.content_mode
-              };
-              
-              // 🆕 添加到本地缓存
-              setAllFilesContentMap(prev => {
-                const newMap = new Map(prev);
-                newMap.set(filename, content);
-                return newMap;
-              });
-            } else {
-              console.warn('Failed to fetch file content from backend:', response.message);
-              // 回退到当前文件内容（如果是当前文件）
-              if (normalizeFilename(liveTaskState.currentFile) === filename) {
-                content = liveTaskState.fileContent || '';
-              } else {
-                content = '';
-              }
-            }
-          } catch (error) {
-            console.error('Error fetching file content from backend:', error);
-            // 回退到当前文件内容（如果是当前文件）
-            if (normalizeFilename(liveTaskState.currentFile) === filename) {
-              content = liveTaskState.fileContent || '';
-            } else {
-              content = '';
-            }
-          }
-        } else {
-          // 没有taskId，使用当前文件内容（如果是当前文件）
-          if (normalizeFilename(liveTaskState.currentFile) === filename) {
-            content = liveTaskState.fileContent || '';
           } else {
-            content = '';
+            console.warn('Failed to fetch file content from backend:', response.message);
           }
+        } catch (error) {
+          console.error('Error fetching file content from backend:', error);
+        }
+      }
+
+      if (!fetched) {
+        const cachedContent = allFilesContentMap.get(filename);
+        if (cachedContent !== undefined) {
+          content = cachedContent;
+          console.log('💾 Using cached file content for:', filename, 'Length:', content.length);
+        } else if (normalizeFilename(liveTaskState.currentFile) === filename) {
+          content = liveTaskState.fileContent || '';
+        } else {
+          content = '';
         }
       }
     }
-    
-    setSelectedFile({ filename, content });
-    console.log('📁 File selected and displayed:', filename, 'Content length:', content.length, 'Metadata:', fileMetadata);
-  }, [liveTaskState.currentFile, liveTaskState.fileContent, allFilesContentMap, isViewingHistory, currentHistoryIndex, history, taskId]);
+
+    if (currentFileRequestRef.current.requestId !== requestId || currentFileRequestRef.current.filename !== filename) {
+      console.log('⚠️ Stale file response ignored for:', filename);
+      return;
+    }
+
+    setSelectedFile({
+      filename,
+      content,
+      metadata: {
+        isUrl: normalizedMetadata.is_url,
+        isEditable: normalizedMetadata.is_editable,
+        fileType: normalizedMetadata.file_type,
+        contentMode: normalizedMetadata.content_mode
+      }
+    });
+
+    console.log('📁 File selected and displayed:', filename, 'Content length:', content.length, 'Metadata:', normalizedMetadata);
+  }, [allFilesContentMap, currentHistoryIndex, history, isViewingHistory, liveTaskState.currentFile, liveTaskState.fileContent, taskId]);
 
   // 添加跳转到指定活动的功能
   const handleJumpToActivity = useCallback((activityIndex: number) => {
@@ -465,6 +455,8 @@ function DashboardPageContent() {
     };
   })();
 
+  const effectiveCurrentFileMetadata = selectedFile?.metadata ?? liveTaskState.currentFileMetadata;
+
   // Diagnostic Log for displayState (removed to prevent re-rendering issues)
 
   const handlePause = async () => {
@@ -523,14 +515,14 @@ function DashboardPageContent() {
     )
   }
 
-  // 计算布局宽度
+  // 计算布局宽度 - 修复：确保总宽度不超过100%
   const getChatWidth = () => {
     if (isMobile) return '100%';
     switch (layoutMode) {
       case 'chat-only': return 'flex-1'
       case 'workspace-only': return 'w-0'
-      case 'both': return 'flex-[0_0_32%]'
-      default: return 'flex-[0_0_32%]'
+      case 'both': return 'w-[30%]' // 从 flex-[0_0_32%] 改为固定30%
+      default: return 'w-[30%]'
     }
   }
 
@@ -541,18 +533,18 @@ function DashboardPageContent() {
   const getFileTreeWidth = () => {
     switch (layoutMode) {
       case 'chat-only': return 'w-0'
-      case 'workspace-only': return 'flex-[0_0_19%]'
-      case 'both': return 'flex-[0_0_19%]'
-      default: return 'flex-[0_0_19%]'
+      case 'workspace-only': return 'w-[18%]' // 从 flex-[0_0_19%] 改为固定18%
+      case 'both': return 'w-[18%]'
+      default: return 'w-[18%]'
     }
   }
 
   const getWorkspaceWidth = () => {
     switch (layoutMode) {
       case 'chat-only': return 'w-0'
-      case 'workspace-only': return 'flex-1'
-      case 'both': return 'flex-1'
-      default: return 'flex-1'
+      case 'workspace-only': return 'flex-1 min-w-0' // 添加 min-w-0 防止溢出
+      case 'both': return 'flex-1 min-w-0' // 添加 min-w-0，剩余空间 = 100% - 30% - 18% - gaps
+      default: return 'flex-1 min-w-0'
     }
   }
 
@@ -759,8 +751,8 @@ function DashboardPageContent() {
         </div>
       )}
 
-      {/* 主内容区域 - 毛玻璃卡片式布局 */}
-      <div className="h-[calc(100vh-6rem)] flex p-4 gap-4 relative z-10">
+      {/* 主内容区域 - 毛玻璃卡片式布局 - 修复：添加overflow-hidden防止内容溢出 */}
+      <div className="h-[calc(100vh-6rem)] flex p-4 gap-4 relative z-10 overflow-hidden max-w-full">
         {/* 移动端：只显示对话框界面 */}
         {isMobile ? (
           <div className="w-full h-full">
@@ -799,11 +791,11 @@ function DashboardPageContent() {
               </div>
             ) : (
               <>
-                {/* 左侧对话框 - 毛玻璃卡片 */}
-                <div className={`${getChatWidth()} transition-all duration-500 ease-in-out flex-shrink-0 ${layoutMode === 'workspace-only' ? 'w-0 overflow-hidden opacity-0 scale-95' : 'opacity-100 scale-100'}`}>
+                {/* 左侧对话框 - 毛玻璃卡片 - 修复：添加min-w-0和overflow-hidden */}
+                <div className={`${getChatWidth()} transition-all duration-500 ease-in-out flex-shrink-0 min-w-0 ${layoutMode === 'workspace-only' ? 'w-0 overflow-hidden opacity-0 scale-95' : 'opacity-100 scale-100'}`}>
                   {layoutMode !== 'workspace-only' && (
-                    <div className="h-full transition-all duration-300 ease-in-out">
-                      <div className="bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-xl h-full transition-all duration-500 ease-in-out transform hover:shadow-2xl overflow-hidden">
+                    <div className="h-full transition-all duration-300 ease-in-out min-w-0">
+                      <div className="bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-xl h-full transition-all duration-500 ease-in-out transform hover:shadow-2xl overflow-hidden min-w-0">
                         <DashboardContent
                           activeTask={displayState.promptText}
                           commandOutput={[]}
@@ -819,11 +811,11 @@ function DashboardPageContent() {
                   )}
                 </div>
 
-                {/* 中间文件树 - 毛玻璃卡片 */}
-                <div className={`${getFileTreeWidth()} transition-all duration-500 ease-in-out flex-shrink-0 ${layoutMode !== 'both' && layoutMode !== 'workspace-only' ? 'w-0 overflow-hidden opacity-0 scale-95' : 'opacity-100 scale-100'}`}>
+                {/* 中间文件树 - 毛玻璃卡片 - 修复：添加min-w-0和overflow-hidden */}
+                <div className={`${getFileTreeWidth()} transition-all duration-500 ease-in-out flex-shrink-0 min-w-0 ${layoutMode !== 'both' && layoutMode !== 'workspace-only' ? 'w-0 overflow-hidden opacity-0 scale-95' : 'opacity-100 scale-100'}`}>
                   {(layoutMode === 'both' || layoutMode === 'workspace-only') && (
-                    <div className="h-full transition-all duration-300 ease-in-out">
-                      <div className="bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-xl h-full transition-all duration-500 ease-in-out transform hover:shadow-2xl overflow-hidden">
+                    <div className="h-full transition-all duration-300 ease-in-out min-w-0">
+                      <div className="bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-xl h-full transition-all duration-500 ease-in-out transform hover:shadow-2xl overflow-hidden min-w-0">
                         <ComputerView
                           ref={computerViewRef}
                           currentFile={displayState.currentFile}
@@ -845,18 +837,18 @@ function DashboardPageContent() {
                           taskStartTime={getTaskStartTime()}
                           historicalFilesContent={isViewingHistory && history[currentHistoryIndex] ? 
                             history[currentHistoryIndex].allFilesContent : undefined}
-                          currentFileMetadata={liveTaskState.currentFileMetadata}
+                          currentFileMetadata={effectiveCurrentFileMetadata}
                         />
                       </div>
                     </div>
                   )}
                 </div>
 
-                {/* 右侧操作台 - 毛玻璃卡片 */}
+                {/* 右侧操作台 - 毛玻璃卡片 - 修复：确保使用min-w-0防止flex溢出 */}
                 <div className={`${getWorkspaceWidth()} transition-all duration-500 ease-in-out flex-shrink-0 ${layoutMode !== 'both' && layoutMode !== 'workspace-only' ? 'w-0 overflow-hidden opacity-0 scale-95' : 'opacity-100 scale-100'}`}>
                   {(layoutMode === 'both' || layoutMode === 'workspace-only') && (
-                    <div className="h-full transition-all duration-300 ease-in-out">
-                      <div className="bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-xl h-full transition-all duration-500 ease-in-out transform hover:shadow-2xl overflow-hidden">
+                    <div className="h-full transition-all duration-300 ease-in-out min-w-0">
+                      <div className="bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-xl h-full transition-all duration-500 ease-in-out transform hover:shadow-2xl overflow-hidden min-w-0">
                         <ComputerView
                           ref={computerViewRef}
                           currentFile={displayState.currentFile}
@@ -879,7 +871,7 @@ function DashboardPageContent() {
                           taskStartTime={getTaskStartTime()}
                           historicalFilesContent={isViewingHistory && history[currentHistoryIndex] ? 
                             history[currentHistoryIndex].allFilesContent : undefined}
-                          currentFileMetadata={liveTaskState.currentFileMetadata}
+                          currentFileMetadata={effectiveCurrentFileMetadata}
                         />
                       </div>
                     </div>

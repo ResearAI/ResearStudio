@@ -2,6 +2,65 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { normalizeFilename } from './utils';
 
+const detectFrontendFileType = (filename: string): string => {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  if (['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'].includes(ext)) return 'image';
+  if (['mp4', 'avi', 'mov', 'wmv', 'flv', 'webm', 'mkv'].includes(ext)) return 'video';
+  if (ext === 'pdf') return 'pdf';
+  if (ext === 'html') return 'html';
+  if (ext === 'md') return 'markdown';
+  if (ext === 'py') return 'python';
+  if (['mp3', 'wav', 'aac', 'ogg', 'm4a'].includes(ext)) return 'audio';
+  if (ext === 'csv') return 'csv';
+  if (['xls', 'xlsx'].includes(ext)) return 'spreadsheet';
+  if (['doc', 'docx'].includes(ext)) return 'document';
+  if (['ppt', 'pptx'].includes(ext)) return 'presentation';
+  return 'text';
+};
+
+const urlModeFileTypes = new Set(['image', 'video', 'audio', 'pdf']);
+
+const inferUrlMode = (fileType: string): boolean => urlModeFileTypes.has(fileType);
+
+const sanitizeFileType = (filename: string, fileType?: string): string => {
+  const expected = detectFrontendFileType(filename);
+  const fallback = expected === 'unknown' ? 'text' : expected;
+  if (!fileType) return fallback;
+  const normalized = fileType.toLowerCase();
+  if (normalized === expected) {
+    return normalized;
+  }
+  if (normalized === 'unknown') {
+    return fallback;
+  }
+  if (expected !== 'unknown') {
+    if (normalized === 'html' && expected !== 'html') return expected;
+    if (normalized === 'text' && expected !== 'text') return expected;
+  }
+  return normalized;
+};
+
+type RawFileMetadata = {
+  file_type?: string;
+  is_url?: boolean;
+  is_editable?: boolean;
+  content_mode?: 'text' | 'url';
+};
+
+export const normalizeFileMetadata = (filename: string, metadata: RawFileMetadata = {}): Required<RawFileMetadata> => {
+  const sanitizedType = sanitizeFileType(filename, metadata.file_type);
+  const isUrl = metadata.is_url !== undefined ? metadata.is_url : inferUrlMode(sanitizedType);
+  const contentMode: 'text' | 'url' = metadata.content_mode || (isUrl ? 'url' : 'text');
+  const isEditable = metadata.is_editable !== undefined ? metadata.is_editable : !isUrl;
+
+  return {
+    file_type: sanitizedType,
+    is_url: isUrl,
+    is_editable: isEditable,
+    content_mode: contentMode
+  };
+};
+
 // 获取API基础URL的函数 - 支持从localStorage读取用户设置
 const getApiBaseUrl = (): string => {
   if (typeof window !== 'undefined') {
@@ -345,9 +404,9 @@ export class ApiService {
     }, 'healthCheck');
   }
 
-  async getFileContent(taskId: string, filename: string): Promise<{ 
-    success: boolean; 
-    content?: string; 
+  async getFileContent(taskId: string, filename: string, signal?: AbortSignal): Promise<{
+    success: boolean;
+    content?: string;
     message?: string;
     filename?: string;
     size?: number;
@@ -358,25 +417,41 @@ export class ApiService {
   }> {
     return withRetry(async () => {
       const normalizedFilename = normalizeFilename(filename);
-      const response = await fetch(`${getCurrentApiBaseUrl()}/tasks/${taskId}/files/${normalizedFilename}`);
+      const response = await fetch(`${getCurrentApiBaseUrl()}/tasks/${taskId}/files/${normalizedFilename}`, {
+        signal // 🆕 传递 AbortSignal 支持取消请求
+      });
       if (!response.ok) {
         const error = new Error(`HTTP error! status: ${response.status}`) as any;
         error.status = response.status;
         throw error;
       }
-      
+
       const contentType = response.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
-        return response.json();
+        const data = await response.json();
+        const normalizedMeta = normalizeFileMetadata(normalizedFilename, {
+          file_type: data.file_type,
+          is_url: data.is_url,
+          is_editable: data.is_editable,
+          content_mode: data.content_mode
+        });
+
+        return {
+          ...data,
+          ...normalizedMeta
+        };
       } else {
         // It's a binary file (image, pdf etc.). We don't need the content here.
         // The renderer will build a URL from the filename.
         // We can return a success object with dummy content.
+        const normalizedMeta = normalizeFileMetadata(normalizedFilename, {
+          file_type: detectFrontendFileType(normalizedFilename)
+        });
         return {
           success: true,
           content: '', // Content is fetched by the browser via URL
-          filename: filename,
-          is_editable: false,
+          filename: normalizedFilename,
+          ...normalizedMeta
         };
       }
     }, 'getFileContent');
@@ -455,18 +530,27 @@ export function useTaskStream(taskId: string | null): UseTaskStreamResult {
       case 'file_update':
         const fileUpdate = message.data as FileUpdate;
         const normalizedFilename = normalizeFilename(fileUpdate.filename);
-
         console.log('📄 File update received:', normalizedFilename, 'Content length:', fileUpdate.content.length);
-        
+        const normalizedMeta = normalizeFileMetadata(normalizedFilename, {
+          file_type: fileUpdate.file_type,
+          is_url: fileUpdate.is_url,
+          is_editable: fileUpdate.is_editable,
+          content_mode: fileUpdate.content_mode
+        });
+
         // 🆕 更严格的文件更新逻辑：总是更新当前文件和内容
         setCurrentFile(normalizedFilename);
         setFileContent(fileUpdate.content);
         setCurrentFileMetadata({
-          isUrl: fileUpdate.is_url,
-          isEditable: fileUpdate.is_editable,
-          fileType: fileUpdate.file_type,
-          contentMode: fileUpdate.content_mode
+          isUrl: normalizedMeta.is_url,
+          isEditable: normalizedMeta.is_editable,
+          fileType: normalizedMeta.file_type,
+          contentMode: normalizedMeta.content_mode
         });
+        fileUpdate.is_url = normalizedMeta.is_url;
+        fileUpdate.is_editable = normalizedMeta.is_editable;
+        fileUpdate.file_type = normalizedMeta.file_type;
+        fileUpdate.content_mode = normalizedMeta.content_mode;
         
         // 始终更新文件列表，确保新文件被添加
         setFileList(prev => {

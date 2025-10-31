@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ResearStudio One-Click Installation Script
-# This script installs and configures ResearStudio automatically
+# This script installs and configures ResearStudio automatically with all dependencies
 
 set -e
 
@@ -10,6 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Function to print colored output
@@ -29,44 +30,185 @@ print_info() {
     echo -e "${BLUE}[i]${NC} $1"
 }
 
+print_step() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN}  $1${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+}
+
 # ASCII Art Banner
 echo -e "${BLUE}"
 cat << "EOF"
- ____                                _             _ _       
-|  _ \ ___  ___  ___  __ _ _ __ ___ | |_ _   _  __| (_) ___  
-| |_) / _ \/ __|/ _ \/ _` | '__/ __|| __| | | |/ _` | |/ _ \ 
+ ____                                _             _ _
+|  _ \ ___  ___  ___  __ _ _ __ ___ | |_ _   _  __| (_) ___
+| |_) / _ \/ __|/ _ \/ _` | '__/ __|| __| | | |/ _` | |/ _ \
 |  _ <  __/\__ \  __/ (_| | |  \__ \| |_| |_| | (_| | | (_) |
-|_| \_\___||___/\___|\__,_|_|  |___/ \__|\__,_|\__,_|_|\___/ 
-                                                               
+|_| \_\___||___/\___|\__,_|_|  |___/ \__|\__,_|\__,_|_|\___/
+
 EOF
 echo -e "${NC}"
-echo "Welcome to ResearStudio Installation"
-echo "====================================="
+echo "Welcome to ResearStudio Complete Installation"
+echo "=============================================="
+echo ""
+echo "This script will install:"
+echo "  • System dependencies (OpenGL, ffmpeg, etc.)"
+echo "  • Python packages from requirements.txt"
+echo "  • Playwright browsers for web crawling"
+echo "  • Frontend dependencies (Node modules)"
+echo "  • Configuration files and directories"
 echo ""
 
 # Check if running from correct directory
-if [ ! -f "README.md" ] || [ ! -d "agent" ] || [ ! -d "frontend" ]; then
+if [ ! -f "requirements.txt" ] || [ ! -d "agent" ] || [ ! -d "frontend" ]; then
     print_error "Please run this script from the ResearStudio root directory"
     exit 1
 fi
 
-# Step 1: Check System Requirements
-print_info "Checking system requirements..."
+# Track installation issues
+ISSUES_FOUND=0
+WARNINGS_FOUND=0
+
+# ============================================================================
+# STEP 1: Install System-Level Dependencies
+# ============================================================================
+print_step "STEP 1: Installing System-Level Dependencies"
+
+# Detect OS
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    OS_NAME=$PRETTY_NAME
+    print_info "Detected OS: $OS_NAME"
+else
+    print_warning "Cannot detect OS"
+    OS="unknown"
+fi
+
+echo ""
+
+# Install system dependencies based on OS
+case $OS in
+    ubuntu|debian|pop|linuxmint)
+        print_info "Installing system dependencies for Ubuntu/Debian-based systems..."
+        echo ""
+
+        # Check if we can use sudo
+        CAN_SUDO=false
+        if sudo -n true 2>/dev/null; then
+            CAN_SUDO=true
+            print_status "sudo access confirmed"
+        else
+            print_warning "This installation requires sudo privileges for system packages"
+            echo ""
+            read -p "Install system dependencies? (Recommended) [Y/n]: " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                CAN_SUDO=true
+            else
+                print_warning "Skipping system dependencies - some features may not work"
+                WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+            fi
+        fi
+
+        if [ "$CAN_SUDO" = true ]; then
+            # Update package list
+            print_info "Updating package list..."
+            if sudo apt-get update -qq 2>/dev/null; then
+                print_status "Package list updated"
+            else
+                print_warning "Failed to update package list"
+            fi
+
+            echo ""
+            print_info "Installing required system packages..."
+
+            # Core build tools
+            print_info "  → Build essentials (gcc, make, etc.)..."
+            if sudo apt-get install -y -qq build-essential python3-dev pkg-config 2>/dev/null; then
+                print_status "    Build tools installed"
+            else
+                print_warning "    Some build tools may not be installed"
+                WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+            fi
+
+            # OpenCV dependencies (CRITICAL for opencv-python)
+            print_info "  → OpenCV system libraries..."
+            if sudo apt-get install -y -qq libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 2>/dev/null; then
+                print_status "    OpenCV libraries installed"
+            else
+                print_warning "    OpenCV libraries may not be installed (opencv-python may fail)"
+                WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+            fi
+
+            # Video processing dependencies
+            print_info "  → Video processing tools (ffmpeg)..."
+            if sudo apt-get install -y -qq ffmpeg libavcodec-dev libavformat-dev libswscale-dev 2>/dev/null; then
+                print_status "    ffmpeg installed"
+            else
+                print_warning "    ffmpeg may not be installed (video features will be limited)"
+                WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+            fi
+
+            # Playwright/Browser dependencies
+            print_info "  → Browser libraries for web crawling..."
+            if sudo apt-get install -y -qq \
+                libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+                libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
+                libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+                libgbm1 libpango-1.0-0 libcairo2 libasound2 2>/dev/null; then
+                print_status "    Browser libraries installed"
+            else
+                print_warning "    Some browser libraries may not be installed (web crawling may fail)"
+                WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+            fi
+
+            echo ""
+            print_status "System dependencies installation complete"
+        fi
+        ;;
+
+    fedora|rhel|centos|rocky|almalinux)
+        print_warning "Detected Fedora/RHEL-based system"
+        print_info "Please manually install system dependencies:"
+        echo "  sudo dnf install -y gcc gcc-c++ python3-devel mesa-libGL ffmpeg nss nspr"
+        WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+        ;;
+
+    arch|manjaro|endeavouros)
+        print_warning "Detected Arch-based system"
+        print_info "Please manually install system dependencies:"
+        echo "  sudo pacman -S --noconfirm base-devel python mesa ffmpeg nss"
+        WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+        ;;
+
+    *)
+        print_warning "Unknown OS detected"
+        print_info "Please manually install: build-essential, python3-dev, libgl1-mesa-glx, ffmpeg, libnss3"
+        WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+        ;;
+esac
+
+# ============================================================================
+# STEP 2: Check System Requirements
+# ============================================================================
+print_step "STEP 2: Verifying System Requirements"
 
 # Check Python
 if command -v python3 &> /dev/null; then
-    PYTHON_VERSION=$(python3 --version 2>&1 | grep -Po '(?<=Python )\d+\.\d+')
+    PYTHON_VERSION=$(python3 --version 2>&1 | grep -Po '(?<=Python )\d+\.\d+' || echo "0.0")
     PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
     PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
-    
+
     if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 8 ]; then
-        print_status "Python $PYTHON_VERSION found"
+        print_status "Python $PYTHON_VERSION (>= 3.8 required)"
     else
         print_error "Python 3.8+ required, found $PYTHON_VERSION"
         exit 1
     fi
 else
-    print_error "Python 3 not found. Please install Python 3.8 or higher"
+    print_error "Python 3 not found. Please install Python 3.8+"
     exit 1
 fi
 
@@ -74,99 +216,200 @@ fi
 if command -v node &> /dev/null; then
     NODE_VERSION=$(node --version | grep -Po '\d+' | head -1)
     if [ "$NODE_VERSION" -ge 18 ]; then
-        print_status "Node.js $(node --version) found"
+        print_status "Node.js $(node --version) (>= 18 required)"
     else
         print_error "Node.js 18+ required, found $(node --version)"
         exit 1
     fi
 else
-    print_error "Node.js not found. Please install Node.js 18 or higher"
+    print_error "Node.js not found. Please install Node.js 18+"
     exit 1
 fi
 
 # Check npm
 if command -v npm &> /dev/null; then
-    print_status "npm $(npm --version) found"
+    print_status "npm $(npm --version)"
 else
     print_error "npm not found. Please install npm"
     exit 1
 fi
 
-# Step 2: Install Python Dependencies
-echo ""
-print_info "Installing Python dependencies..."
+# Check pip
+if command -v pip3 &> /dev/null; then
+    print_status "pip3 $(pip3 --version | grep -Po '\d+\.\d+\.\d+' | head -1)"
+else
+    print_error "pip3 not found. Please install pip3"
+    exit 1
+fi
 
-# Core dependencies
-PYTHON_DEPS=(
-    "flask"
-    "flask-cors"
-    "openai"
-    "python-dotenv"
-    "aiohttp"
-    "websockets"
-    "httpx"
-    "requests"
-    "pyyaml"
-    "numpy"
-    "pandas"
-)
+# ============================================================================
+# STEP 3: Setup Python Environment
+# ============================================================================
+print_step "STEP 3: Setting Up Python Environment"
 
 # Try to create virtual environment
-if python3 -m venv venv 2>/dev/null; then
-    print_status "Virtual environment created"
-    source venv/bin/activate
-    pip install --upgrade pip > /dev/null 2>&1
+USING_VENV=false
+PIP_USER=""
+
+if [ ! -d "venv" ]; then
+    print_info "Creating Python virtual environment..."
+    if python3 -m venv venv 2>/dev/null; then
+        print_status "Virtual environment created at ./venv"
+        USING_VENV=true
+    else
+        print_warning "Could not create virtual environment, will use user installation"
+        PIP_USER="--user"
+    fi
 else
-    print_warning "Could not create virtual environment, using user installation"
-    PIP_USER="--user"
+    print_status "Virtual environment already exists"
+    USING_VENV=true
 fi
 
-# Install Python packages
-for dep in "${PYTHON_DEPS[@]}"; do
-    if pip3 install $PIP_USER "$dep" > /dev/null 2>&1; then
-        echo -e "  ${GREEN}✓${NC} $dep"
-    else
-        echo -e "  ${YELLOW}⚠${NC} $dep (may already be installed)"
-    fi
-done
+# Activate virtual environment if it exists
+if [ "$USING_VENV" = true ]; then
+    if [ -f "venv/bin/activate" ]; then
+        source venv/bin/activate
+        print_status "Virtual environment activated"
 
-# Install MCP separately as it might fail
-if pip3 install $PIP_USER mcp > /dev/null 2>&1; then
-    echo -e "  ${GREEN}✓${NC} mcp"
-else
-    echo -e "  ${YELLOW}⚠${NC} mcp (optional, some features may be limited)"
+        # Upgrade pip in venv
+        print_info "Upgrading pip..."
+        pip install --upgrade pip setuptools wheel > /dev/null 2>&1
+        print_status "pip upgraded"
+    fi
 fi
 
-# Install document processing tools (optional)
-OPTIONAL_DEPS=(
-    "beautifulsoup4"
-    "pypdf2"
-    "python-docx"
-    "openpyxl"
-    "pillow"
-)
+# ============================================================================
+# STEP 4: Install Python Dependencies
+# ============================================================================
+print_step "STEP 4: Installing Python Dependencies"
 
-print_info "Installing optional dependencies..."
-for dep in "${OPTIONAL_DEPS[@]}"; do
-    if pip3 install $PIP_USER "$dep" > /dev/null 2>&1; then
-        echo -e "  ${GREEN}✓${NC} $dep"
-    else
-        echo -e "  ${YELLOW}⚠${NC} $dep (optional)"
-    fi
-done
-
-# Step 3: Setup Environment Files
+echo "This may take 5-10 minutes depending on your internet speed..."
+echo "Installing packages from requirements.txt..."
 echo ""
-print_info "Setting up environment files..."
+
+# Install with progress
+if pip3 install $PIP_USER -r requirements.txt 2>&1 | tee /tmp/pip_install.log | grep -E "Requirement already satisfied|Successfully installed|Collecting"; then
+    echo ""
+    print_status "Python packages installation completed"
+else
+    INSTALL_EXIT=$?
+    echo ""
+    print_warning "Some packages may have installation issues (exit code: $INSTALL_EXIT)"
+
+    # Try to install critical packages individually
+    print_info "Installing critical packages individually..."
+    CRITICAL_PKGS=("flask" "flask-cors" "openai" "python-dotenv" "mcp" "fastmcp" "requests" "aiohttp" "numpy" "pandas" "beautifulsoup4" "PyPDF2")
+
+    for pkg in "${CRITICAL_PKGS[@]}"; do
+        if pip3 install $PIP_USER "$pkg" > /dev/null 2>&1; then
+            echo -e "  ${GREEN}✓${NC} $pkg"
+        else
+            echo -e "  ${RED}✗${NC} $pkg - FAILED"
+            ISSUES_FOUND=$((ISSUES_FOUND + 1))
+        fi
+    done
+fi
+
+echo ""
+
+# Verify critical package imports
+print_info "Verifying critical Python packages..."
+python3 << 'VERIFY_EOF'
+import sys
+
+packages = [
+    ('flask', 'Flask'),
+    ('flask_cors', 'Flask-CORS'),
+    ('openai', 'OpenAI'),
+    ('dotenv', 'python-dotenv'),
+    ('mcp', 'MCP'),
+    ('fastmcp', 'FastMCP'),
+    ('requests', 'Requests'),
+    ('numpy', 'NumPy'),
+    ('pandas', 'Pandas'),
+    ('bs4', 'BeautifulSoup4'),
+    ('PyPDF2', 'PyPDF2'),
+]
+
+failed = []
+for module, name in packages:
+    try:
+        __import__(module)
+        print(f"  ✓ {name}")
+    except ImportError as e:
+        print(f"  ✗ {name} - MISSING")
+        failed.append(name)
+
+if failed:
+    print(f"\nWARNING: {len(failed)} critical packages failed to import")
+    sys.exit(1)
+else:
+    print("\nAll critical packages verified successfully!")
+    sys.exit(0)
+VERIFY_EOF
+
+VERIFY_EXIT=$?
+if [ $VERIFY_EXIT -ne 0 ]; then
+    print_error "Some critical packages are missing or cannot be imported"
+    ISSUES_FOUND=$((ISSUES_FOUND + 1))
+else
+    print_status "All critical packages verified"
+fi
+
+# ============================================================================
+# STEP 5: Install Playwright Browsers
+# ============================================================================
+print_step "STEP 5: Installing Playwright Browsers"
+
+print_info "Installing Chromium browser for web crawling (crawl4ai)..."
+echo "This may take a few minutes..."
+echo ""
+
+# Try different methods to install playwright
+PLAYWRIGHT_INSTALLED=false
+
+# Method 1: Direct playwright command
+if command -v playwright &> /dev/null; then
+    if playwright install chromium 2>&1 | tee /tmp/playwright_install.log; then
+        PLAYWRIGHT_INSTALLED=true
+    fi
+fi
+
+# Method 2: Python module
+if [ "$PLAYWRIGHT_INSTALLED" = false ]; then
+    print_info "Trying Python module method..."
+    if python3 -m playwright install chromium 2>&1 | tee /tmp/playwright_install.log; then
+        PLAYWRIGHT_INSTALLED=true
+    fi
+fi
+
+echo ""
+if [ "$PLAYWRIGHT_INSTALLED" = true ]; then
+    print_status "Playwright Chromium browser installed"
+
+    # Also try to install system dependencies for playwright
+    if command -v playwright &> /dev/null; then
+        print_info "Installing Playwright system dependencies..."
+        playwright install-deps chromium 2>/dev/null || python3 -m playwright install-deps chromium 2>/dev/null || print_warning "Could not install Playwright system dependencies automatically"
+    fi
+else
+    print_warning "Playwright browser installation had issues"
+    print_info "You can manually install later with: python3 -m playwright install chromium"
+    WARNINGS_FOUND=$((WARNINGS_FOUND + 1))
+fi
+
+# ============================================================================
+# STEP 6: Setup Configuration Files
+# ============================================================================
+print_step "STEP 6: Creating Configuration Files"
 
 # Agent .env
 if [ ! -f "agent/.env" ]; then
     if [ -f "agent/.env.example" ]; then
         cp agent/.env.example agent/.env
         print_status "Created agent/.env from template"
-        print_warning "Please edit agent/.env and add your OpenAI API key"
     else
-        cat > agent/.env << EOL
+        cat > agent/.env << 'EOL'
 # OpenAI Configuration
 OPENAI_API_KEY=your-openai-api-key-here
 OPENAI_BASE_URL=https://api.openai.com/v1
@@ -185,8 +428,8 @@ MAX_EXECUTION_TIME=120
 SANDBOX_MODE=true
 EOL
         print_status "Created agent/.env with defaults"
-        print_warning "Please edit agent/.env and add your OpenAI API key"
     fi
+    print_warning "⚠️  IMPORTANT: Edit agent/.env and add your OPENAI_API_KEY"
 else
     print_status "agent/.env already exists"
 fi
@@ -196,7 +439,7 @@ if [ ! -f "frontend/.env.local" ]; then
     if [ -f "frontend/.env.example" ]; then
         cp frontend/.env.example frontend/.env.local
     else
-        cat > frontend/.env.local << EOL
+        cat > frontend/.env.local << 'EOL'
 # API Configuration
 NEXT_PUBLIC_API_URL=http://localhost:5000
 NEXT_PUBLIC_WS_URL=ws://localhost:5000
@@ -214,644 +457,201 @@ else
     print_status "frontend/.env.local already exists"
 fi
 
-# Step 4: Install Frontend Dependencies
+# ============================================================================
+# STEP 7: Create Directories
+# ============================================================================
+print_step "STEP 7: Creating Project Directories"
+
+DIRS=("agent/workspaces" "agent/agent_cache" "logs")
+for dir in "${DIRS[@]}"; do
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        print_status "Created $dir/"
+    else
+        print_status "$dir/ already exists"
+    fi
+done
+
+# ============================================================================
+# STEP 8: Install Frontend Dependencies
+# ============================================================================
+print_step "STEP 8: Installing Frontend Dependencies"
+
+echo "This may take 5-10 minutes..."
 echo ""
-print_info "Installing frontend dependencies (this may take a few minutes)..."
 
 cd frontend
 
-# Check if node_modules exists and is recent
-if [ -d "node_modules" ]; then
-    if [ -f "node_modules/.package-lock.json" ]; then
-        print_status "Node modules already installed"
-    else
-        print_warning "Reinstalling node modules..."
-        rm -rf node_modules package-lock.json
-        npm install --legacy-peer-deps > /dev/null 2>&1 || npm install --force > /dev/null 2>&1
-    fi
+if [ -d "node_modules" ] && [ -f "node_modules/.package-lock.json" ]; then
+    print_status "Node modules already installed"
 else
-    npm install --legacy-peer-deps > /dev/null 2>&1 || npm install --force > /dev/null 2>&1
-    print_status "Frontend dependencies installed"
+    print_info "Installing Node.js packages..."
+    if npm install --legacy-peer-deps > /tmp/npm_install.log 2>&1; then
+        print_status "Frontend dependencies installed"
+    else
+        print_warning "npm install had some issues, trying with --force..."
+        if npm install --force > /tmp/npm_install.log 2>&1; then
+            print_status "Frontend dependencies installed (with --force)"
+        else
+            print_error "Failed to install frontend dependencies"
+            print_info "Check /tmp/npm_install.log for details"
+            ISSUES_FOUND=$((ISSUES_FOUND + 1))
+        fi
+    fi
 fi
 
 cd ..
 
-# Step 5: Create necessary directories
-echo ""
-print_info "Creating necessary directories..."
-mkdir -p agent/workspaces
-mkdir -p agent/agent_cache
-print_status "Directories created"
+# ============================================================================
+# STEP 9: Create Startup Scripts
+# ============================================================================
+print_step "STEP 9: Creating Startup Scripts"
 
-# Step 6: Create startup scripts
-echo ""
-print_info "Creating startup scripts..."
-
-# Create logs directory
-mkdir -p logs
-print_status "Created logs directory"
-
-# Create start script with port support and daemon mode
-cat > start.sh << 'EOL'
-#!/bin/bash
-
-# ResearStudio Startup Script
-# Usage: ./start.sh [backend_port] [frontend_port] [--daemon]
-# Example: ./start.sh 5000 3000 --daemon
-
-# Default ports
-BACKEND_PORT=${1:-5000}
-FRONTEND_PORT=${2:-3000}
-DAEMON_MODE=false
-
-# Check for daemon flag
-for arg in "$@"; do
-    case $arg in
-        --daemon|-d)
-            DAEMON_MODE=true
-            shift
-            ;;
-    esac
-done
-
-# Colors
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-# Create logs directory if it doesn't exist
-mkdir -p logs
-
-# Generate timestamp for this session
-SESSION_ID=$(date +%Y%m%d_%H%M%S)
-LOG_DIR="logs/session_${SESSION_ID}"
-mkdir -p "$LOG_DIR"
-
-echo -e "${BLUE}Starting ResearStudio...${NC}"
-echo "========================"
-echo "Session ID: $SESSION_ID"
-echo "Backend Port: $BACKEND_PORT"
-echo "Frontend Port: $FRONTEND_PORT"
-echo "Daemon Mode: $DAEMON_MODE"
-echo "Logs Directory: $LOG_DIR"
-echo ""
-
-# Save session info
-cat > "$LOG_DIR/session_info.txt" << EOF
-Session ID: $SESSION_ID
-Start Time: $(date)
-Backend Port: $BACKEND_PORT
-Frontend Port: $FRONTEND_PORT
-Daemon Mode: $DAEMON_MODE
-PID File: $LOG_DIR/pids.txt
-EOF
-
-# Function to cleanup on exit
-cleanup() {
-    echo ""
-    echo "Shutting down ResearStudio..."
-    if [ -f "$LOG_DIR/pids.txt" ]; then
-        while IFS= read -r pid; do
-            kill "$pid" 2>/dev/null
-        done < "$LOG_DIR/pids.txt"
-        rm -f "$LOG_DIR/pids.txt"
-    fi
-    exit
-}
-
-# Only trap signals if not in daemon mode
-if [ "$DAEMON_MODE" = false ]; then
-    trap cleanup EXIT INT TERM
-fi
-
-# Start backend
-echo -e "${GREEN}[1/2]${NC} Starting backend server on port $BACKEND_PORT..."
-cd agent
-
-# Update backend port in environment if needed
-if [ "$BACKEND_PORT" != "5000" ]; then
-    export PORT=$BACKEND_PORT
-    export BACKEND_PORT=$BACKEND_PORT
-    echo -e "${YELLOW}[INFO]${NC} Using custom backend port: $BACKEND_PORT"
-fi
-
-python3 app.py > "../$LOG_DIR/backend.log" 2>&1 &
-BACKEND_PID=$!
-echo "$BACKEND_PID" > "../$LOG_DIR/pids.txt"
-cd ..
-
-# Wait for backend to start
-echo "Waiting for backend to initialize..."
-sleep 3
-
-# Check if backend started successfully
-if ! kill -0 $BACKEND_PID 2>/dev/null; then
-    echo -e "${RED}Backend failed to start. Check $LOG_DIR/backend.log for details${NC}"
-    exit 1
-fi
-
-echo -e "   ${GREEN}✓${NC} Backend running on http://localhost:$BACKEND_PORT"
-
-# Start frontend
-echo -e "${GREEN}[2/2]${NC} Starting frontend server on port $FRONTEND_PORT..."
-cd frontend
-
-# Update frontend port
-export PORT=$FRONTEND_PORT
-if [ "$FRONTEND_PORT" != "3000" ]; then
-    echo -e "${YELLOW}[INFO]${NC} Using custom frontend port: $FRONTEND_PORT"
-fi
-
-# Update API URL in environment if backend port changed
-if [ "$BACKEND_PORT" != "5000" ]; then
-    export NEXT_PUBLIC_API_URL="http://localhost:$BACKEND_PORT"
-    echo -e "${YELLOW}[INFO]${NC} Updated API URL to: http://localhost:$BACKEND_PORT"
-fi
-
-npm run dev -- --port $FRONTEND_PORT > "../$LOG_DIR/frontend.log" 2>&1 &
-FRONTEND_PID=$!
-echo "$FRONTEND_PID" >> "../$LOG_DIR/pids.txt"
-cd ..
-
-# Wait for frontend to start
-echo "Waiting for frontend to initialize..."
-sleep 5
-
-# Check if frontend started successfully
-if ! kill -0 $FRONTEND_PID 2>/dev/null; then
-    echo -e "${RED}Frontend failed to start. Check $LOG_DIR/frontend.log for details${NC}"
-    kill $BACKEND_PID 2>/dev/null
-    exit 1
-fi
-
-echo ""
-echo -e "${GREEN}✅ ResearStudio is running!${NC}"
-echo ""
-echo "  Frontend: http://localhost:$FRONTEND_PORT"
-echo "  Backend:  http://localhost:$BACKEND_PORT"
-echo "  Session:  $SESSION_ID"
-echo "  Logs:     $LOG_DIR/"
-echo ""
-
-if [ "$DAEMON_MODE" = true ]; then
-    echo -e "${YELLOW}Running in daemon mode.${NC}"
-    echo "To view logs: ./log.sh $SESSION_ID"
-    echo "To stop: ./stop.sh $BACKEND_PORT $FRONTEND_PORT"
-    echo ""
-    # Save current session as latest
-    echo "$SESSION_ID" > logs/latest_session.txt
-    echo "$BACKEND_PORT" > logs/latest_backend_port.txt
-    echo "$FRONTEND_PORT" > logs/latest_frontend_port.txt
-    exit 0
+# Create start.sh (simplified version for display)
+if [ ! -f "start.sh" ] || [ ! -x "start.sh" ]; then
+    chmod +x start.sh 2>/dev/null || true
+    print_status "start.sh is ready"
 else
-    echo "Press Ctrl+C to stop"
-    echo "To view logs in another terminal: ./log.sh $SESSION_ID"
-    echo ""
-    # Keep script running
-    wait
-fi
-EOL
-
-chmod +x start.sh
-print_status "Created enhanced start.sh with port support and daemon mode"
-
-# Create stop script with dynamic port support
-cat > stop.sh << 'EOL'
-#!/bin/bash
-
-# ResearStudio Stop Script
-# Usage: ./stop.sh [backend_port] [frontend_port]
-# Example: ./stop.sh 5001 3001
-
-# Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# Get ports from arguments or use defaults
-BACKEND_PORT=${1:-}
-FRONTEND_PORT=${2:-}
-
-echo -e "${BLUE}Stopping ResearStudio...${NC}"
-echo "======================="
-
-# Function to kill processes on a specific port
-kill_port() {
-    local port=$1
-    local service_name=$2
-    
-    if [ -n "$port" ]; then
-        local pids=$(lsof -ti:$port 2>/dev/null)
-        if [ -n "$pids" ]; then
-            echo -e "${YELLOW}Stopping $service_name on port $port...${NC}"
-            echo "$pids" | xargs kill -9 2>/dev/null
-            echo -e "  ${GREEN}✓${NC} $service_name stopped"
-            return 0
-        else
-            echo -e "  ${YELLOW}ℹ${NC} No $service_name process found on port $port"
-            return 1
-        fi
-    fi
-}
-
-# Function to stop processes by PID file
-stop_by_pids() {
-    local session_id=$1
-    local log_dir="logs/session_${session_id}"
-    local pid_file="$log_dir/pids.txt"
-    
-    if [ -f "$pid_file" ]; then
-        echo -e "${YELLOW}Stopping processes from session $session_id...${NC}"
-        local stopped=0
-        while IFS= read -r pid; do
-            if kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null
-                if [ $? -eq 0 ]; then
-                    echo -e "  ${GREEN}✓${NC} Stopped process $pid"
-                    stopped=$((stopped + 1))
-                fi
-            fi
-        done < "$pid_file"
-        
-        if [ $stopped -gt 0 ]; then
-            rm -f "$pid_file"
-            echo -e "  ${GREEN}✓${NC} Session $session_id stopped ($stopped processes)"
-            return 0
-        fi
-    fi
-    return 1
-}
-
-# If no ports specified, try to get them from latest session
-if [ -z "$BACKEND_PORT" ] && [ -z "$FRONTEND_PORT" ]; then
-    if [ -f "logs/latest_backend_port.txt" ] && [ -f "logs/latest_frontend_port.txt" ]; then
-        BACKEND_PORT=$(cat logs/latest_backend_port.txt 2>/dev/null)
-        FRONTEND_PORT=$(cat logs/latest_frontend_port.txt 2>/dev/null)
-        echo "Using ports from latest session: Backend=$BACKEND_PORT, Frontend=$FRONTEND_PORT"
-    fi
+    print_status "start.sh already exists"
 fi
 
-# Try to stop by PID files from latest session first
-latest_session=""
-if [ -f "logs/latest_session.txt" ]; then
-    latest_session=$(cat logs/latest_session.txt)
-    if stop_by_pids "$latest_session"; then
-        echo -e "${GREEN}✅ ResearStudio stopped successfully${NC}"
-        exit 0
-    fi
+# Create stop.sh
+if [ ! -f "stop.sh" ] || [ ! -x "stop.sh" ]; then
+    chmod +x stop.sh 2>/dev/null || true
+    print_status "stop.sh is ready"
+else
+    print_status "stop.sh already exists"
 fi
 
-# If no specific ports provided, use defaults
-if [ -z "$BACKEND_PORT" ] && [ -z "$FRONTEND_PORT" ]; then
-    BACKEND_PORT="5000"
-    FRONTEND_PORT="3000"
-    echo "No ports specified, using defaults: Backend=5000, Frontend=3000"
+# Create log.sh
+if [ ! -f "log.sh" ] || [ ! -x "log.sh" ]; then
+    chmod +x log.sh 2>/dev/null || true
+    print_status "log.sh is ready"
+else
+    print_status "log.sh already exists"
 fi
 
-# Stop services by port
-backend_stopped=false
-frontend_stopped=false
+# ============================================================================
+# STEP 10: Final Verification
+# ============================================================================
+print_step "STEP 10: Final System Verification"
 
-if [ -n "$BACKEND_PORT" ]; then
-    if kill_port "$BACKEND_PORT" "Backend"; then
-        backend_stopped=true
-    fi
+echo "Running final checks..."
+echo ""
+
+# Check system dependencies
+print_info "System Dependencies:"
+if command -v ffmpeg &> /dev/null; then
+    echo -e "  ${GREEN}✓${NC} ffmpeg"
+else
+    echo -e "  ${YELLOW}⚠${NC} ffmpeg not found (video features will be limited)"
 fi
 
-if [ -n "$FRONTEND_PORT" ]; then
-    if kill_port "$FRONTEND_PORT" "Frontend"; then
-        frontend_stopped=true
-    fi
+if ldconfig -p 2>/dev/null | grep -q libGL.so; then
+    echo -e "  ${GREEN}✓${NC} libGL (OpenGL)"
+else
+    echo -e "  ${YELLOW}⚠${NC} libGL not found (opencv may not work)"
 fi
 
-# Fallback: Kill any remaining processes by name
-echo -e "${YELLOW}Cleaning up remaining processes...${NC}"
-
-# Kill any remaining python/node processes related to ResearStudio
-killed_processes=0
-
-# Kill Python app.py processes
-python_pids=$(pgrep -f "python3.*app.py" 2>/dev/null)
-if [ -n "$python_pids" ]; then
-    echo "$python_pids" | xargs kill -9 2>/dev/null
-    killed_processes=$((killed_processes + 1))
-    echo -e "  ${GREEN}✓${NC} Stopped Python backend processes"
-fi
-
-# Kill npm/next processes
-npm_pids=$(pgrep -f "npm run dev\|next.*dev" 2>/dev/null)
-if [ -n "$npm_pids" ]; then
-    echo "$npm_pids" | xargs kill -9 2>/dev/null
-    killed_processes=$((killed_processes + 1))
-    echo -e "  ${GREEN}✓${NC} Stopped Node.js frontend processes"
-fi
-
-# Final check for any remaining processes on the ports
-remaining_backend=$(lsof -ti:${BACKEND_PORT:-5000} 2>/dev/null)
-remaining_frontend=$(lsof -ti:${FRONTEND_PORT:-3000} 2>/dev/null)
-
-if [ -n "$remaining_backend" ] || [ -n "$remaining_frontend" ]; then
-    echo -e "${YELLOW}Force killing remaining processes...${NC}"
-    [ -n "$remaining_backend" ] && echo "$remaining_backend" | xargs kill -9 2>/dev/null
-    [ -n "$remaining_frontend" ] && echo "$remaining_frontend" | xargs kill -9 2>/dev/null
+# Check Playwright browsers
+if [ -d "$HOME/.cache/ms-playwright" ] || [ -d "$HOME/.cache/playwright" ]; then
+    echo -e "  ${GREEN}✓${NC} Playwright browsers"
+else
+    echo -e "  ${YELLOW}⚠${NC} Playwright browsers (run: python3 -m playwright install chromium)"
 fi
 
 echo ""
-if [ "$backend_stopped" = true ] || [ "$frontend_stopped" = true ] || [ $killed_processes -gt 0 ]; then
-    echo -e "${GREEN}✅ ResearStudio stopped successfully${NC}"
+print_info "Python Packages:"
+PKG_COUNT=$(pip3 list 2>/dev/null | wc -l)
+if [ "$PKG_COUNT" -gt 50 ]; then
+    echo -e "  ${GREEN}✓${NC} $PKG_COUNT packages installed"
 else
-    echo -e "${YELLOW}⚠ No running ResearStudio processes found${NC}"
+    echo -e "  ${YELLOW}⚠${NC} Only $PKG_COUNT packages (expected 100+)"
 fi
 
-# Show currently running processes on these ports (for verification)
 echo ""
-echo -e "${BLUE}Verification:${NC}"
-backend_check=$(lsof -ti:${BACKEND_PORT:-5000} 2>/dev/null)
-frontend_check=$(lsof -ti:${FRONTEND_PORT:-3000} 2>/dev/null)
-
-if [ -z "$backend_check" ]; then
-    echo -e "  ${GREEN}✓${NC} Port ${BACKEND_PORT:-5000} (backend) is free"
+print_info "Frontend:"
+if [ -d "frontend/node_modules" ]; then
+    NODE_PKG_COUNT=$(ls -1 frontend/node_modules 2>/dev/null | wc -l)
+    echo -e "  ${GREEN}✓${NC} $NODE_PKG_COUNT Node.js packages"
 else
-    echo -e "  ${RED}✗${NC} Port ${BACKEND_PORT:-5000} (backend) still has processes: $backend_check"
+    echo -e "  ${RED}✗${NC} Node modules not installed"
 fi
 
-if [ -z "$frontend_check" ]; then
-    echo -e "  ${GREEN}✓${NC} Port ${FRONTEND_PORT:-3000} (frontend) is free"
-else
-    echo -e "  ${RED}✗${NC} Port ${FRONTEND_PORT:-3000} (frontend) still has processes: $frontend_check"
-fi
-EOL
-
-chmod +x stop.sh
-print_status "Created enhanced stop.sh with dynamic port support"
-
-# Create log viewer script
-cat > log.sh << 'EOL'
-#!/bin/bash
-
-# ResearStudio Log Viewer Script
-# Usage: ./log.sh [session_id] [--backend|--frontend|--all|--tail|--follow]
-# Examples:
-#   ./log.sh                    # Show latest session logs
-#   ./log.sh 20241213_143055    # Show specific session logs
-#   ./log.sh --tail             # Tail latest session logs
-#   ./log.sh --backend          # Show only backend logs
-#   ./log.sh session_id --tail  # Tail specific session logs
-
-# Colors
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-# Default values
-SESSION_ID=""
-LOG_TYPE="all"
-TAIL_MODE=false
-FOLLOW_MODE=false
-
-# Parse arguments
-for arg in "$@"; do
-    case $arg in
-        --backend|-b)
-            LOG_TYPE="backend"
-            shift
-            ;;
-        --frontend|-f)
-            LOG_TYPE="frontend"
-            shift
-            ;;
-        --all|-a)
-            LOG_TYPE="all"
-            shift
-            ;;
-        --tail|-t)
-            TAIL_MODE=true
-            shift
-            ;;
-        --follow|--watch|-w)
-            FOLLOW_MODE=true
-            shift
-            ;;
-        --help|-h)
-            echo "ResearStudio Log Viewer"
-            echo ""
-            echo "Usage: ./log.sh [session_id] [options]"
-            echo ""
-            echo "Options:"
-            echo "  --backend, -b     Show only backend logs"
-            echo "  --frontend, -f    Show only frontend logs"
-            echo "  --all, -a         Show all logs (default)"
-            echo "  --tail, -t        Show last 50 lines and exit"
-            echo "  --follow, -w      Follow logs (like tail -f)"
-            echo "  --help, -h        Show this help"
-            echo ""
-            echo "Examples:"
-            echo "  ./log.sh                    # Show latest session logs"
-            echo "  ./log.sh 20241213_143055    # Show specific session logs"
-            echo "  ./log.sh --tail             # Tail latest session logs"
-            echo "  ./log.sh --backend          # Show only backend logs"
-            echo "  ./log.sh session_id --tail  # Tail specific session logs"
-            echo ""
-            exit 0
-            ;;
-        --*)
-            echo "Unknown option: $arg"
-            echo "Use --help for usage information"
-            exit 1
-            ;;
-        *)
-            if [ -z "$SESSION_ID" ]; then
-                SESSION_ID="$arg"
-            fi
-            shift
-            ;;
-    esac
-done
-
-# Function to get latest session ID
-get_latest_session() {
-    if [ -f "logs/latest_session.txt" ]; then
-        cat logs/latest_session.txt
+echo ""
+print_info "Configuration:"
+if [ -f "agent/.env" ]; then
+    if grep -q "your-openai-api-key-here" agent/.env; then
+        echo -e "  ${YELLOW}⚠${NC} agent/.env exists (API key not configured)"
     else
-        # Find the most recent session directory
-        ls -1 logs/ | grep "^session_" | sort -r | head -1 | sed 's/session_//'
+        echo -e "  ${GREEN}✓${NC} agent/.env configured"
     fi
-}
-
-# Get session ID if not provided
-if [ -z "$SESSION_ID" ]; then
-    SESSION_ID=$(get_latest_session)
-    if [ -z "$SESSION_ID" ]; then
-        echo -e "${RED}No sessions found. Have you started ResearStudio yet?${NC}"
-        echo "Run ./start.sh to start ResearStudio first."
-        exit 1
-    fi
-    echo -e "${YELLOW}Using latest session: $SESSION_ID${NC}"
-fi
-
-# Set log directory
-LOG_DIR="logs/session_${SESSION_ID}"
-
-# Check if session exists
-if [ ! -d "$LOG_DIR" ]; then
-    echo -e "${RED}Session not found: $SESSION_ID${NC}"
-    echo ""
-    echo "Available sessions:"
-    ls -1 logs/ | grep "^session_" | sed 's/session_/  /' | sort -r
-    exit 1
-fi
-
-# Display session info
-echo -e "${BLUE}ResearStudio Logs${NC}"
-echo "=================="
-if [ -f "$LOG_DIR/session_info.txt" ]; then
-    cat "$LOG_DIR/session_info.txt"
 else
-    echo "Session: $SESSION_ID"
+    echo -e "  ${RED}✗${NC} agent/.env missing"
 fi
+
+# ============================================================================
+# Installation Complete
+# ============================================================================
+
 echo ""
-
-# Function to show logs with proper formatting
-show_logs() {
-    local file="$1"
-    local title="$2"
-    local color="$3"
-    
-    if [ -f "$file" ]; then
-        echo -e "${color}$title${NC}"
-        echo "$(printf '=%.0s' {1..40})"
-        
-        if [ "$TAIL_MODE" = true ]; then
-            tail -n 50 "$file"
-        elif [ "$FOLLOW_MODE" = true ]; then
-            tail -f "$file"
-        else
-            cat "$file"
-        fi
-        echo ""
-    else
-        echo -e "${RED}$title - File not found: $file${NC}"
-        echo ""
-    fi
-}
-
-# Function to show all logs with timestamps
-show_all_logs() {
-    if [ "$FOLLOW_MODE" = true ]; then
-        echo -e "${CYAN}Following all logs (Ctrl+C to exit)...${NC}"
-        echo ""
-        # Use multitail if available, otherwise use tail
-        if command -v multitail &> /dev/null; then
-            multitail -cT ANSI \
-                -l "tail -f $LOG_DIR/backend.log" \
-                -l "tail -f $LOG_DIR/frontend.log"
-        else
-            # Fallback to simple tail with process substitution
-            tail -f "$LOG_DIR/backend.log" &
-            BACKEND_TAIL_PID=$!
-            tail -f "$LOG_DIR/frontend.log" &
-            FRONTEND_TAIL_PID=$!
-            
-            # Cleanup function
-            cleanup_tails() {
-                kill $BACKEND_TAIL_PID $FRONTEND_TAIL_PID 2>/dev/null
-                exit
-            }
-            trap cleanup_tails EXIT INT TERM
-            wait
-        fi
-    else
-        show_logs "$LOG_DIR/backend.log" "Backend Logs" "$GREEN"
-        show_logs "$LOG_DIR/frontend.log" "Frontend Logs" "$BLUE"
-    fi
-}
-
-# Show logs based on type
-case $LOG_TYPE in
-    backend)
-        if [ "$FOLLOW_MODE" = true ]; then
-            echo -e "${GREEN}Following backend logs (Ctrl+C to exit)...${NC}"
-            echo ""
-        fi
-        show_logs "$LOG_DIR/backend.log" "Backend Logs" "$GREEN"
-        ;;
-    frontend)
-        if [ "$FOLLOW_MODE" = true ]; then
-            echo -e "${BLUE}Following frontend logs (Ctrl+C to exit)...${NC}"
-            echo ""
-        fi
-        show_logs "$LOG_DIR/frontend.log" "Frontend Logs" "$BLUE"
-        ;;
-    all)
-        show_all_logs
-        ;;
-esac
-
-# Show available sessions at the end (except in follow mode)
-if [ "$FOLLOW_MODE" = false ] && [ "$TAIL_MODE" = false ]; then
-    echo -e "${YELLOW}Available sessions:${NC}"
-    ls -1 logs/ | grep "^session_" | sed 's/session_/  /' | sort -r | head -10
-    if [ $(ls -1 logs/ | grep "^session_" | wc -l) -gt 10 ]; then
-        echo "  ... and more"
-    fi
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+if [ $ISSUES_FOUND -eq 0 ]; then
+    echo -e "${GREEN}✅ Installation Complete!${NC}"
+else
+    echo -e "${YELLOW}⚠️  Installation Complete with $ISSUES_FOUND issue(s)${NC}"
 fi
-EOL
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
-chmod +x log.sh
-print_status "Created log.sh for viewing session logs"
-
-# Final summary
+echo -e "${BLUE}📋 Next Steps:${NC}"
 echo ""
-echo "====================================="
-echo -e "${GREEN}✅ Installation Complete!${NC}"
-echo "====================================="
-echo ""
-echo "Available Scripts:"
-echo ""
-echo -e "${BLUE}Starting ResearStudio:${NC}"
-echo "  ./start.sh                    # Default ports (5000, 3000)"
-echo "  ./start.sh 5001 3001          # Custom ports"
-echo "  ./start.sh 5000 3000 --daemon # Background mode"
-echo ""
-echo -e "${BLUE}Stopping ResearStudio:${NC}"
-echo "  ./stop.sh                     # Stop latest session"
-echo "  ./stop.sh 5001 3001           # Stop specific ports"
-echo ""
-echo -e "${BLUE}Viewing Logs:${NC}"
-echo "  ./log.sh                      # Show latest session logs"
-echo "  ./log.sh --tail               # Show last 50 lines"
-echo "  ./log.sh --follow             # Follow logs in real-time"
-echo "  ./log.sh --backend            # Show only backend logs"
-echo "  ./log.sh --frontend           # Show only frontend logs"
-echo "  ./log.sh session_id           # Show specific session logs"
-echo ""
-echo -e "${YELLOW}Next Steps:${NC}"
-echo ""
-echo "1. Add your OpenAI API key:"
-echo "   Edit agent/.env and set OPENAI_API_KEY"
+echo "1. Configure your API key:"
+echo "   ${YELLOW}nano agent/.env${NC}   # Set OPENAI_API_KEY"
 echo ""
 echo "2. Start ResearStudio:"
-echo "   ./start.sh"
+echo "   ${YELLOW}./start.sh${NC}"
 echo ""
 echo "3. Open in browser:"
-echo "   http://localhost:3000"
+echo "   ${YELLOW}http://localhost:3000${NC}"
 echo ""
-echo -e "${BLUE}Log Management:${NC}"
-echo "- All logs are saved to logs/session_YYYYMMDD_HHMMSS/"
-echo "- Session info includes ports, start time, and process IDs"
-echo "- Use ./log.sh to view logs even after stopping ResearStudio"
+
+echo -e "${BLUE}📚 Available Commands:${NC}"
 echo ""
-echo "For more information, see README.md"
+echo "  ${CYAN}./start.sh${NC}              Start ResearStudio"
+echo "  ${CYAN}./start.sh --daemon${NC}     Start in background"
+echo "  ${CYAN}./stop.sh${NC}               Stop ResearStudio"
+echo "  ${CYAN}./log.sh${NC}                View logs"
+echo ""
+
+if [ $WARNINGS_FOUND -gt 0 ]; then
+    echo -e "${YELLOW}⚠️  $WARNINGS_FOUND warning(s) during installation${NC}"
+    echo ""
+    echo "Optional fixes:"
+    echo "  • Install missing system packages manually"
+    echo "  • Run: python3 -m playwright install chromium"
+    echo "  • Run: pip3 install -r requirements.txt"
+    echo ""
+fi
+
+if [ $ISSUES_FOUND -gt 0 ]; then
+    echo -e "${RED}❌ $ISSUES_FOUND critical issue(s) found${NC}"
+    echo ""
+    echo "Please fix the issues above before starting ResearStudio"
+    echo "Check installation logs:"
+    echo "  • /tmp/pip_install.log (Python packages)"
+    echo "  • /tmp/npm_install.log (Frontend packages)"
+    echo "  • /tmp/playwright_install.log (Playwright)"
+    echo ""
+    exit 1
+fi
+
+echo -e "${GREEN}🎉 ResearStudio is ready to use!${NC}"
 echo ""
 
 # Check if API key is set
 if grep -q "your-openai-api-key-here" agent/.env 2>/dev/null; then
-    print_warning "Don't forget to add your OpenAI API key to agent/.env!"
+    echo -e "${YELLOW}⚠️  Don't forget to configure your OpenAI API key in agent/.env${NC}"
+    echo ""
 fi

@@ -84,11 +84,20 @@ if [ -f "logs/latest_session.txt" ]; then
     fi
 fi
 
-# If no specific ports provided, use defaults
+# Ensure we have port values for any missing inputs
 if [ -z "$BACKEND_PORT" ] && [ -z "$FRONTEND_PORT" ]; then
     BACKEND_PORT="5000"
     FRONTEND_PORT="3000"
     echo "No ports specified, using defaults: Backend=5000, Frontend=3000"
+else
+    if [ -z "$BACKEND_PORT" ]; then
+        BACKEND_PORT="5000"
+        echo "No backend port provided, defaulting to 5000"
+    fi
+    if [ -z "$FRONTEND_PORT" ]; then
+        FRONTEND_PORT="3000"
+        echo "No frontend port provided, defaulting to 3000"
+    fi
 fi
 
 # Stop services by port

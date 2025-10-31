@@ -84,17 +84,11 @@ done
 
 # Function to get latest session ID
 get_latest_session() {
-    # Always find the most recent session directory by timestamp
-    # This ensures we get the actual latest session, not a stale file
-    latest=$(ls -1t logs/ 2>/dev/null | grep "^session_" | head -1 | sed 's/session_//')
-    
-    # If we found a session, update the latest_session.txt file
-    if [ -n "$latest" ]; then
-        echo "$latest" > logs/latest_session.txt 2>/dev/null
-        echo "$latest"
-    elif [ -f "logs/latest_session.txt" ]; then
-        # Fallback to saved file if no sessions found
+    if [ -f "logs/latest_session.txt" ]; then
         cat logs/latest_session.txt
+    else
+        # Find the most recent session directory
+        ls -1 logs/ | grep "^session_" | sort -r | head -1 | sed 's/session_//'
     fi
 }
 

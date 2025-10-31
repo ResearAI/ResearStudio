@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useLayoutEffect, useRef, useState, useEffect } from "react"
+import React, { useLayoutEffect, useRef, useState, useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Paperclip, ArrowUp, Loader2, FileText, X, ArrowRight, Sparkles, Brain, Code, Zap, Users, TrendingUp, BarChart3, Database, Search, Terminal, FileSpreadsheet } from "lucide-react"
 import { useRouter } from "next/navigation"
@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast"
 import { ApiSettings } from "@/components/ui/api-settings"
 import gsap from "gsap"
 import { ScrollTrigger } from "gsap/ScrollTrigger"
-import { cn } from "@/lib/utils"
+import { appendCacheBusterForPng, cn } from "@/lib/utils"
 
 // Register GSAP plugins
 gsap.registerPlugin(ScrollTrigger)
@@ -61,6 +61,7 @@ export default function Home() {
   const { toast } = useToast()
   const mainRef = useRef<HTMLDivElement>(null)
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 })
+  const backgroundImageUrl = useMemo(() => appendCacheBusterForPng('/bg.png', Date.now().toString()), [])
 
   // 缓存相关函数
   const saveApiConfigToCache = (config: { openaiApiKey: string; openaiBaseUrl: string; model: string }) => {
@@ -480,7 +481,7 @@ export default function Home() {
         {/* Background */}
         <div 
           className="absolute inset-0 bg-cover bg-center bg-no-repeat opacity-10"
-          style={{ backgroundImage: 'url(/bg.png)' }}
+          style={{ backgroundImage: `url(${backgroundImageUrl})` }}
         />
         
         {/* Ink ripple effect */}

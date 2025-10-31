@@ -17,17 +17,36 @@ fastmcp>=0.1.0
 numpy>=1.24.0
 pandas>=2.0.0
 
-# Document Processing (Optional but recommended)
+# Document Processing (Required for documents_tool)
 beautifulsoup4>=4.12.0
 pypdf2>=3.0.0
 python-docx>=1.0.0
 openpyxl>=3.1.0
 pillow>=10.0.0
+python-pptx>=0.6.21
+docx2markdown>=0.1.0
+xmltodict>=0.13.0
+chunkr-ai>=0.1.0
+
+# Web Crawling (Required for web_crawler)
+crawl4ai>=0.2.0
+
+# Video Processing (Required for video_tool)
+yt-dlp>=2023.0.0
+ffmpeg-python>=0.2.0
+opencv-python>=4.8.0
+scenedetect>=0.6.0
+
+# Audio Processing (Required for documents_tool)
+assemblyai>=0.20.0
+
+# Logging and Utilities (Required)
+loguru>=0.7.0
+retry>=0.9.2
+nest-asyncio>=1.5.0
 
 # Optional Dependencies (Install as needed)
-# opencv-python>=4.8.0  # For video processing
 # moviepy>=1.0.0  # For video editing
-# assemblyai>=0.20.0  # For audio transcription
 # matplotlib>=3.8.0  # For plotting
 # scipy>=1.11.0  # For scientific computing
 # scikit-learn>=1.3.0  # For machine learning

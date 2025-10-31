@@ -27,7 +27,16 @@ import anyio
 #   (provide these scripts in the Python path)
 from image_tool import ask_question_about_image
 from excel_tool import ExcelToolkit
-from video_tool import ask_question_about_video
+try:
+    from video_tool import ask_question_about_video
+except Exception as import_error:
+    logger.warning(f"Video tool unavailable, disabling video support in documents_tool: {import_error}")
+
+    def ask_question_about_video(*args, **kwargs):
+        raise RuntimeError(
+            "Video processing is unavailable because the video tool backend "
+            "could not be loaded (missing dependency such as OpenCV/libGL)."
+        )
 # --- third‑party libs already used ------------------------------------------ #
 import assemblyai as aai
 from pptx.enum.shapes import MSO_SHAPE_TYPE
